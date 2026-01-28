@@ -1,0 +1,13 @@
+#!/bin/sh
+# LINE Webhook UCI defaults
+
+# Set proper permissions for the webhook server script
+chmod +x /usr/bin/line-webhook-server
+
+# Enable and start the service if configured
+if [ -f /etc/config/line_webhook ]; then
+    # Ensure config file has correct permissions
+    chmod 600 /etc/config/line_webhook
+fi
+
+exit 0

@@ -1,0 +1,18 @@
+{
+    "admin/services/line_webhook": {
+        "title": "LINE Webhook",
+        "order": 90,
+        "action": {
+            "type": "view",
+            "path": "line_webhook/settings"
+        },
+        "depends": {
+            "acl": [
+                "luci-app-line-webhook"
+            ],
+            "uci": {
+                "line_webhook": true
+            }
+        }
+    }
+}

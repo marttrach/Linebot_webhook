@@ -1,0 +1,6 @@
+config line_webhook 'main'
+	option enabled '0'
+	option port '5000'
+	option bind_address '0.0.0.0'
+	option access_token ''
+	option channel_secret ''

@@ -1,0 +1,20 @@
+{
+    "luci-app-line-webhook": {
+        "description": "Grant access to LINE Webhook configuration",
+        "read": {
+            "uci": [
+                "line_webhook"
+            ],
+            "file": {
+                "/usr/bin/line-webhook-server": [
+                    "read"
+                ]
+            }
+        },
+        "write": {
+            "uci": [
+                "line_webhook"
+            ]
+        }
+    }
+}
