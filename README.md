@@ -16,16 +16,7 @@ For detailed install/build steps, see the [Install & Build Guide](docs/install-b
 
 - OpenWrt 24.10.x or later
 - Architecture: x86_64 (more architectures can be added)
-- Dependencies: `python3`, `python3-flask`, `python3-requests`, `luci-base`
-
-## Why Flask + Jinja2 + Werkzeug
-
-- Robust HTTP handling: Werkzeug covers header parsing, URL decoding, chunked transfer, and security hardening—avoids the edge-case gaps of hand-written `BaseHTTPRequestHandler`.
-- Clean routing and middleware: Flask keeps webhook/health/admin routes separate and lets you drop in signature verification, logging, or rate limiting as middleware.
-- Reliable errors and logging: Built-in exception capture and dev/prod modes prevent leaking tracebacks to clients and keep structured logs.
-- Request/Response objects: Built-in JSON parsing and response serialization reduce socket/stream mistakes.
-- Templates and static assets: If the LuCI UI needs HTML, Jinja2 plus Flask static serving handle templates with correct MIME/cache headers.
-- Maintained ecosystem: Flask/Werkzeug/Jinja2 ship regular security fixes and documentation; a custom microframework would require your own upkeep.
+- Dependencies: `python3`, `python3-requests`, `luci-base`
 
 ## Installation
 

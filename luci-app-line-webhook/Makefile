@@ -3,13 +3,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-line-webhook
-PKG_VERSION:=2.0.0
+PKG_VERSION:=3.0.0
 PKG_RELEASE:=1
 PKG_MAINTAINER:=MattLin <mattmail@mattjun.work>
 PKG_LICENSE:=MIT
 
 LUCI_TITLE:=LuCI support for LINE Webhook Bot
-LUCI_DEPENDS:=+luci-base +python3 +python3-flask +python3-requests
+LUCI_DEPENDS:=+luci-base +python3 +python3-requests
 
 include $(TOPDIR)/feeds/luci/luci.mk
 

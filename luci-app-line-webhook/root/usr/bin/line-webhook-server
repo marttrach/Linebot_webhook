@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # LINE Webhook Server for OpenWrt
 # Reads configuration from UCI and handles LINE BOT messages
+# Uses Python built-in http.server (no Flask dependency)
 
 import json
 import hashlib
@@ -8,7 +9,8 @@ import hmac
 import base64
 import subprocess
 import logging
-from flask import Flask, request, abort
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import parse_qs
 
 # Configure logging
 logging.basicConfig(
@@ -17,7 +19,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
 
 def get_uci_config(option, default=''):
     """Read configuration from UCI."""
@@ -32,6 +33,7 @@ def get_uci_config(option, default=''):
         logger.error(f"Failed to read UCI config {option}: {e}")
     return default
 
+
 def validate_signature(body, signature, channel_secret):
     """Validate LINE webhook signature."""
     hash_value = hmac.new(
@@ -42,20 +44,21 @@ def validate_signature(body, signature, channel_secret):
     calculated_signature = base64.b64encode(hash_value).decode('utf-8')
     return hmac.compare_digest(signature, calculated_signature)
 
+
 def send_reply(reply_token, messages, access_token):
     """Send reply message via LINE API."""
     import requests
-    
+
     headers = {
         'Content-Type': 'application/json',
         'Authorization': f'Bearer {access_token}'
     }
-    
+
     data = {
         'replyToken': reply_token,
         'messages': messages
     }
-    
+
     try:
         response = requests.post(
             'https://api.line.me/v2/bot/message/reply',
@@ -70,6 +73,7 @@ def send_reply(reply_token, messages, access_token):
         logger.error(f"Failed to send reply: {e}")
         return False
 
+
 def process_message(event, access_token):
     """
     Process incoming message and generate reply.
@@ -77,10 +81,10 @@ def process_message(event, access_token):
     """
     message_type = event.get('message', {}).get('type', '')
     reply_token = event.get('replyToken', '')
-    
+
     if not reply_token:
         return
-    
+
     if message_type == 'text':
         text = event['message'].get('text', '')
         # Default: Echo the message
@@ -89,62 +93,91 @@ def process_message(event, access_token):
         messages = [{'type': 'text', 'text': reply_text}]
     else:
         messages = [{'type': 'text', 'text': '你傳的不是文字訊息喔～'}]
-    
+
     send_reply(reply_token, messages, access_token)
 
-@app.route('/', methods=['GET'])
-def health_check():
-    """Health check endpoint."""
-    return 'LINE Webhook Server is running', 200
 
-@app.route('/', methods=['POST'])
-def webhook():
-    """Handle LINE webhook events."""
-    # Get configuration
-    access_token = get_uci_config('access_token')
-    channel_secret = get_uci_config('channel_secret')
-    
-    if not access_token or not channel_secret:
-        logger.error("Missing access_token or channel_secret in configuration")
-        abort(500)
-    
-    # Get request body and signature
-    body = request.get_data(as_text=True)
-    signature = request.headers.get('X-Line-Signature', '')
-    
-    # Validate signature
-    if not validate_signature(body, signature, channel_secret):
-        logger.warning("Invalid signature")
-        abort(403)
-    
-    # Parse and process events
-    try:
-        data = json.loads(body)
-        events = data.get('events', [])
-        
-        for event in events:
-            event_type = event.get('type', '')
-            logger.info(f"Received event: {event_type}")
-            
-            if event_type == 'message':
-                process_message(event, access_token)
-            # TODO: Handle other event types (follow, unfollow, join, etc.)
-            
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON: {e}")
-        abort(400)
-    except Exception as e:
-        logger.error(f"Error processing webhook: {e}")
-    
-    return 'OK'
+class WebhookHandler(BaseHTTPRequestHandler):
+    """HTTP Request Handler for LINE Webhook."""
+
+    def log_message(self, format, *args):
+        """Override to use our logger."""
+        logger.info("%s - %s" % (self.address_string(), format % args))
+
+    def send_text_response(self, code, message):
+        """Send a text response."""
+        self.send_response(code)
+        self.send_header('Content-Type', 'text/plain; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(message.encode('utf-8'))
+
+    def do_GET(self):
+        """Handle GET requests - health check."""
+        self.send_text_response(200, 'LINE Webhook Server is running')
+
+    def do_POST(self):
+        """Handle POST requests - webhook events."""
+        # Get configuration
+        access_token = get_uci_config('access_token')
+        channel_secret = get_uci_config('channel_secret')
+
+        if not access_token or not channel_secret:
+            logger.error("Missing access_token or channel_secret in configuration")
+            self.send_text_response(500, 'Internal Server Error')
+            return
+
+        # Get request body
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length).decode('utf-8')
+
+        # Get signature
+        signature = self.headers.get('X-Line-Signature', '')
+
+        # Validate signature
+        if not validate_signature(body, signature, channel_secret):
+            logger.warning("Invalid signature")
+            self.send_text_response(403, 'Forbidden')
+            return
+
+        # Parse and process events
+        try:
+            data = json.loads(body)
+            events = data.get('events', [])
+
+            for event in events:
+                event_type = event.get('type', '')
+                logger.info(f"Received event: {event_type}")
+
+                if event_type == 'message':
+                    process_message(event, access_token)
+                # TODO: Handle other event types (follow, unfollow, join, etc.)
+
+            self.send_text_response(200, 'OK')
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON: {e}")
+            self.send_text_response(400, 'Bad Request')
+        except Exception as e:
+            logger.error(f"Error processing webhook: {e}")
+            self.send_text_response(500, 'Internal Server Error')
+
 
 def main():
     """Main entry point."""
     port = int(get_uci_config('port', '5000'))
     bind_address = get_uci_config('bind_address', '0.0.0.0')
-    
+
+    server_address = (bind_address, port)
+    httpd = HTTPServer(server_address, WebhookHandler)
+
     logger.info(f"Starting LINE Webhook Server on {bind_address}:{port}")
-    app.run(host=bind_address, port=port, threaded=True)
+
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        logger.info("Shutting down server")
+        httpd.shutdown()
+
 
 if __name__ == '__main__':
     main()
