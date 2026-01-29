@@ -75,12 +75,6 @@ Since your OpenWrt router is likely behind NAT, you need to expose the webhook e
 2. Create a tunnel pointing to `localhost:5000`
 3. Use the tunnel URL as your LINE Webhook URL
 
-### Option 3: ngrok (for testing)
-
-```sh
-ngrok http 5000
-```
-
 ## LINE Developer Console Setup
 
 1. Go to [LINE Developers Console](https://developers.line.biz/)

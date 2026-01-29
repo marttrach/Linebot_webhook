@@ -33,3 +33,9 @@ Use the analogous URL for `werkzeug-${PKG_VERSION}.tar.gz`.
 ## Verbose build
 
 Run the SDK with `V=sc` and `MAKEFLAGS=-j1` to capture full logs (already set in the GitHub workflow). This makes it easier to see missing host modules like `flit_core`, `build`, or `installer`.
+
+## Flask wheel missing (FileNotFoundError)
+
+Symptom: `FileNotFoundError ... /openwrt-build/Flask-*.whl`.
+
+Fix in this repo: local override at `lang/python/Flask/Makefile` (Flask 2.3.3) adds host build deps (`python-build/host`, `python-installer/host`, `python-wheel/host`, `python-flit-core/host`). Ensure your feed priority picks up this override (the GitHub Action uses `FEEDNAME=linebot`, which includes the repo tree).
