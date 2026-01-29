@@ -3,7 +3,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-line-webhook
-PKG_VERSION:=1.0.0
+PKG_VERSION:=2.0.0
 PKG_RELEASE:=1
 PKG_MAINTAINER:=MattLin <mattmail@mattjun.work>
 PKG_LICENSE:=MIT
@@ -13,10 +13,14 @@ LUCI_DEPENDS:=+luci-base +python3 +python3-flask +python3-requests
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
-# Install section: ensure init script has execute permission
-define Package/luci-app-line-webhook/install
-	$(call Package/luci-app-line-webhook/install/Default,$(1))
-	chmod 755 $(1)/etc/init.d/line_webhook
+# Post-install script: ensure init script has execute permission and enable service
+define Package/luci-app-line-webhook/postinst
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] || {
+	chmod 755 /etc/init.d/line_webhook
+	/etc/init.d/line_webhook enable
+}
+exit 0
 endef
 
 # Pre-remove script: stop and disable service before removal
