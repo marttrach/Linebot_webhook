@@ -1,16 +1,17 @@
 name: Build OpenWrt Package
 
 on:
+  workflow_dispatch:
   push:
     branches: [main, master]
   pull_request:
     branches: [main, master]
-  workflow_dispatch:
 
 jobs:
   build:
     name: Build for ${{ matrix.arch }}
     runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.message, '[ci]')
     strategy:
       fail-fast: false
       matrix:
@@ -29,9 +30,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
           FEEDNAME: linebot
           PACKAGES: luci-app-line-webhook
-          V: sc
-          MAKEFLAGS: -j1
-          BUILD_LOG: 1
+          MAKEFLAGS: "-j$(nproc)"
           NO_SHFMT_CHECK: 1
 
       - name: Upload IPK artifacts
@@ -45,6 +44,7 @@ jobs:
     name: Test in OpenWrt rootfs
     needs: build
     runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.message, '[ci]')
     
     steps:
       - name: Checkout repository
