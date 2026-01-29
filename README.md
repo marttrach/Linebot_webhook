@@ -2,19 +2,30 @@
 
 A LuCI application package that provides a web-configurable LINE BOT Webhook server for OpenWrt routers.
 
+For detailed install/build steps, see the [Install & Build Guide](docs/install-build-guide.md).
+
 ## Features
 
-- 📱 **LINE BOT Integration**: Receive and reply to LINE messages
-- 🖥️ **LuCI Web Interface**: Configure via OpenWrt's web UI
-- 🔒 **Secure Configuration**: Credentials stored in UCI with proper permissions
-- 🔄 **Procd Service**: Managed as a native OpenWrt service
-- 🎯 **Extensible**: Easy to add custom reply logic
+- **LINE BOT Integration**: Receive and reply to LINE messages
+- **LuCI Web Interface**: Configure via OpenWrt's web UI
+- **Secure Configuration**: Credentials stored in UCI with proper permissions
+- **Procd Service**: Managed as a native OpenWrt service
+- **Extensible**: Easy to add custom reply logic
 
 ## Requirements
 
 - OpenWrt 24.10.x or later
 - Architecture: x86_64 (more architectures can be added)
 - Dependencies: `python3`, `python3-flask`, `python3-requests`, `luci-base`
+
+## Why Flask + Jinja2 + Werkzeug
+
+- Robust HTTP handling: Werkzeug covers header parsing, URL decoding, chunked transfer, and security hardening—avoids the edge-case gaps of hand-written `BaseHTTPRequestHandler`.
+- Clean routing and middleware: Flask keeps webhook/health/admin routes separate and lets you drop in signature verification, logging, or rate limiting as middleware.
+- Reliable errors and logging: Built-in exception capture and dev/prod modes prevent leaking tracebacks to clients and keep structured logs.
+- Request/Response objects: Built-in JSON parsing and response serialization reduce socket/stream mistakes.
+- Templates and static assets: If the LuCI UI needs HTML, Jinja2 plus Flask static serving handle templates with correct MIME/cache headers.
+- Maintained ecosystem: Flask/Werkzeug/Jinja2 ship regular security fixes and documentation; a custom microframework would require your own upkeep.
 
 ## Installation
 
@@ -137,7 +148,3 @@ curl http://localhost:5000/
 ## License
 
 MIT License
-
-## Credits
-
-Based on the LINE Webhook tutorial from [STEAM 教育學習網](https://steam.oxxostudio.tw/category/python/example/line-webhook.html)
