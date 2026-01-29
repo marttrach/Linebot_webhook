@@ -13,6 +13,12 @@ LUCI_DEPENDS:=+luci-base +python3 +python3-flask +python3-requests
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
+# Install section: ensure init script has execute permission
+define Package/luci-app-line-webhook/install
+	$(call Package/luci-app-line-webhook/install/Default,$(1))
+	chmod 755 $(1)/etc/init.d/line_webhook
+endef
+
 # Pre-remove script: stop and disable service before removal
 define Package/luci-app-line-webhook/prerm
 #!/bin/sh
