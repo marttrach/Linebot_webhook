@@ -29,6 +29,9 @@ jobs:
           ARCH: ${{ matrix.arch }}
           FEEDNAME: linebot
           PACKAGES: luci-app-line-webhook
+          V: sc
+          MAKEFLAGS: -j1
+          BUILD_LOG: 1
           NO_SHFMT_CHECK: 1
 
       - name: Upload IPK artifacts
