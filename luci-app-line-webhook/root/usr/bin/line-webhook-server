@@ -9,8 +9,13 @@ import hmac
 import base64
 import subprocess
 import logging
+import threading
+import queue
+import ssl
+import time
+from pathlib import Path
+from collections import deque
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import parse_qs
 
 # Configure logging
 logging.basicConfig(
@@ -18,6 +23,13 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Cache to provide simple idempotency for webhookEventId
+EVENT_CACHE_LIMIT = 1024
+_event_cache = deque()
+_event_cache_set = set()
+event_queue = queue.Queue()
+MAX_EVENT_AGE_MS = 5 * 60 * 1000  # 5 minutes tolerance for replay protection
 
 
 def get_uci_config(option, default=''):
@@ -34,15 +46,107 @@ def get_uci_config(option, default=''):
     return default
 
 
+def build_tls_context(cert_path, key_path):
+    """
+    Build an SSLContext enforcing TLS 1.2+ and allowed ciphers.
+    Raises ValueError on missing files.
+    """
+    cert_file = Path(cert_path)
+    key_file = Path(key_path)
+    if not cert_file.exists() or not key_file.exists():
+        raise ValueError(f"TLS files missing: cert={cert_file}, key={key_file}")
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    # Enforce TLS 1.2+
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    # Recommended cipher suites per rule.md/signature.md
+    context.set_ciphers(
+        "TLS_AES_256_GCM_SHA384:"
+        "TLS_CHACHA20_POLY1305_SHA256:"
+        "TLS_AES_128_GCM_SHA256:"
+        "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"
+    )
+    context.load_cert_chain(certfile=str(cert_file), keyfile=str(key_file))
+    # Disable client renegotiation and compression if supported
+    try:
+        context.options |= ssl.OP_NO_COMPRESSION
+    except Exception:
+        pass
+    return context
+
+
 def validate_signature(body, signature, channel_secret):
-    """Validate LINE webhook signature."""
+    """Validate LINE webhook signature using raw request body bytes."""
+    if not signature or not channel_secret:
+        return False
+    if isinstance(body, str):
+        body = body.encode('utf-8')
     hash_value = hmac.new(
         channel_secret.encode('utf-8'),
-        body.encode('utf-8'),
+        body,
         hashlib.sha256
     ).digest()
     calculated_signature = base64.b64encode(hash_value).decode('utf-8')
     return hmac.compare_digest(signature, calculated_signature)
+
+
+def is_duplicate_event(event_id):
+    """Simple in-memory idempotency check for webhookEventId."""
+    if not event_id:
+        return False
+    if event_id in _event_cache_set:
+        return True
+
+    _event_cache.append(event_id)
+    _event_cache_set.add(event_id)
+
+    if len(_event_cache) > EVENT_CACHE_LIMIT:
+        oldest = _event_cache.popleft()
+        _event_cache_set.discard(oldest)
+
+    return False
+
+
+def is_timestamp_valid(timestamp_ms, max_age_ms=MAX_EVENT_AGE_MS):
+    """Validate event timestamp is within acceptable window."""
+    if timestamp_ms is None:
+        return True  # allow if missing to avoid false negatives
+    try:
+        ts = int(timestamp_ms)
+    except Exception:
+        return False
+    now_ms = int(time.time() * 1000)
+    if ts > now_ms + max_age_ms:
+        return False  # too far in the future
+    if now_ms - ts > max_age_ms:
+        return False  # too old
+    return True
+
+
+def handle_event(event, access_token):
+    """Dispatch LINE events."""
+    event_type = event.get('type', '')
+    logger.info(f"Processing event: {event_type}")
+
+    if event_type == 'message':
+        process_message(event, access_token)
+    else:
+        logger.info(f"Unhandled event type: {event_type}")
+
+
+def event_worker():
+    """Background worker to process events asynchronously."""
+    while True:
+        item = event_queue.get()
+        if item is None:
+            break
+        event, access_token = item
+        try:
+            handle_event(event, access_token)
+        except Exception as e:
+            logger.error(f"Error handling event: {e}")
+        finally:
+            event_queue.task_done()
 
 
 def send_reply(reply_token, messages, access_token):
@@ -74,6 +178,34 @@ def send_reply(reply_token, messages, access_token):
         return False
 
 
+def mark_as_read(mark_token, access_token):
+    """Mark message as read using the v2.1 API."""
+    import requests
+
+    if not mark_token:
+        return False
+
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {access_token}'
+    }
+    payload = {"markAsReadToken": mark_token}
+
+    try:
+        resp = requests.post(
+            'https://api.line.me/v2/bot/chat/markAsRead',
+            headers=headers,
+            json=payload,
+            timeout=5
+        )
+        resp.raise_for_status()
+        logger.info("Marked message as read")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to mark as read: {e}")
+        return False
+
+
 def process_message(event, access_token):
     """
     Process incoming message and generate reply.
@@ -81,9 +213,14 @@ def process_message(event, access_token):
     """
     message_type = event.get('message', {}).get('type', '')
     reply_token = event.get('replyToken', '')
+    mark_token = event.get('message', {}).get('markAsReadToken')
 
     if not reply_token:
         return
+
+    # Mark as read when token is provided (2025 Messaging API spec)
+    if mark_token:
+        mark_as_read(mark_token, access_token)
 
     if message_type == 'text':
         text = event['message'].get('text', '')
@@ -92,7 +229,7 @@ def process_message(event, access_token):
         reply_text = text
         messages = [{'type': 'text', 'text': reply_text}]
     else:
-        messages = [{'type': 'text', 'text': '你傳的不是文字訊息喔～'}]
+        messages = [{'type': 'text', 'text': 'Unsupported message type.'}]
 
     send_reply(reply_token, messages, access_token)
 
@@ -111,6 +248,17 @@ class WebhookHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(message.encode('utf-8'))
 
+    def send_json_response(self, code, payload=None):
+        """Send a JSON response (default empty object)."""
+        if payload is None:
+            payload = {}
+        body = json.dumps(payload).encode('utf-8')
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         """Handle GET requests - health check."""
         self.send_text_response(200, 'LINE Webhook Server is running')
@@ -123,60 +271,101 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         if not access_token or not channel_secret:
             logger.error("Missing access_token or channel_secret in configuration")
-            self.send_text_response(500, 'Internal Server Error')
+            self.send_json_response(500, {"message": "missing configuration"})
             return
 
         # Get request body
         content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length).decode('utf-8')
+        raw_body = self.rfile.read(content_length) if content_length > 0 else b''
 
         # Get signature
-        signature = self.headers.get('X-Line-Signature', '')
+        signature = self.headers.get('X-Line-Signature', '') or self.headers.get('x-line-signature', '')
 
         # Validate signature
-        if not validate_signature(body, signature, channel_secret):
+        if not validate_signature(raw_body, signature, channel_secret):
             logger.warning("Invalid signature")
-            self.send_text_response(403, 'Forbidden')
+            self.send_json_response(403, {"message": "invalid signature"})
             return
 
         # Parse and process events
         try:
-            data = json.loads(body)
+            data = json.loads(raw_body)
             events = data.get('events', [])
 
+            # No events is valid for console verification
+            if not events:
+                self.send_json_response(200, {})
+                return
+
             for event in events:
-                event_type = event.get('type', '')
-                logger.info(f"Received event: {event_type}")
+                if not is_timestamp_valid(event.get('timestamp')):
+                    logger.warning("Rejected event due to stale/invalid timestamp")
+                    self.send_json_response(400, {"message": "timestamp invalid or too old"})
+                    return
 
-                if event_type == 'message':
-                    process_message(event, access_token)
-                # TODO: Handle other event types (follow, unfollow, join, etc.)
+                event_id = event.get('webhookEventId')
+                if is_duplicate_event(event_id):
+                    logger.info(f"Skip duplicate event: {event_id}")
+                    continue
 
-            self.send_text_response(200, 'OK')
+                delivery_ctx = event.get('deliveryContext', {})
+                if delivery_ctx.get('isRedelivery'):
+                    logger.info(f"Redelivery flagged for event: {event_id}")
+
+                # Enqueue for async processing to keep response <2s
+                event_queue.put((event, access_token))
+
+            # Early ACK to LINE platform
+            self.send_json_response(200, {})
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON: {e}")
-            self.send_text_response(400, 'Bad Request')
+            self.send_json_response(400, {"message": "invalid JSON"})
         except Exception as e:
             logger.error(f"Error processing webhook: {e}")
-            self.send_text_response(500, 'Internal Server Error')
+            self.send_json_response(500, {"message": "internal error"})
 
 
 def main():
     """Main entry point."""
     port = int(get_uci_config('port', '5000'))
     bind_address = get_uci_config('bind_address', '0.0.0.0')
+    use_tls = get_uci_config('use_tls', '0') == '1'
+    tls_cert = get_uci_config('tls_cert', '/etc/ssl/line_webhook/server.crt')
+    tls_key = get_uci_config('tls_key', '/etc/ssl/line_webhook/server.key')
 
     server_address = (bind_address, port)
     httpd = HTTPServer(server_address, WebhookHandler)
 
-    logger.info(f"Starting LINE Webhook Server on {bind_address}:{port}")
+    if use_tls:
+        try:
+            tls_ctx = build_tls_context(tls_cert, tls_key)
+            httpd.socket = tls_ctx.wrap_socket(httpd.socket, server_side=True)
+            logger.info(
+                "TLS enabled (>=TLS1.2) with cert=%s key=%s",
+                tls_cert,
+                tls_key,
+            )
+        except Exception as e:
+            logger.error(f"Failed to enable TLS: {e}")
+            raise SystemExit(1)
+    else:
+        logger.warning("TLS is disabled; enable use_tls=1 with a CA-signed cert for production.")
+
+    worker_thread = threading.Thread(target=event_worker, daemon=True)
+    worker_thread.start()
+
+    scheme = "https" if use_tls else "http"
+    logger.info(f"Starting LINE Webhook Server on {scheme}://{bind_address}:{port}")
 
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         logger.info("Shutting down server")
+    finally:
         httpd.shutdown()
+        event_queue.put(None)  # stop worker
+        worker_thread.join(timeout=2)
 
 
 if __name__ == '__main__':

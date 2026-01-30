@@ -11,6 +11,7 @@ For detailed install/build steps, see the [Install & Build Guide](docs/install-b
 - **Secure Configuration**: Credentials stored in UCI with proper permissions
 - **Procd Service**: Managed as a native OpenWrt service
 - **Extensible**: Easy to add custom reply logic
+- **TLS Ready**: Supports TLS 1.2/1.3 with hardened cipher suites
 
 ## Requirements
 
@@ -47,7 +48,8 @@ This repository uses GitHub Actions to automatically build packages. You can:
    - **Channel Access Token**: From LINE Developers Console
    - **Channel Secret**: From LINE Developers Console
 3. Set the port (default: 5000)
-4. Enable the service
+4. (Recommended) Enable **TLS** and provide paths to a CA-signed cert/key
+5. Enable the service
 5. Save & Apply
 
 ### Via Command Line
@@ -57,6 +59,9 @@ uci set line_webhook.main.enabled='1'
 uci set line_webhook.main.port='5000'
 uci set line_webhook.main.access_token='YOUR_ACCESS_TOKEN'
 uci set line_webhook.main.channel_secret='YOUR_CHANNEL_SECRET'
+uci set line_webhook.main.use_tls='1'
+uci set line_webhook.main.tls_cert='/etc/ssl/line_webhook/server.crt'
+uci set line_webhook.main.tls_key='/etc/ssl/line_webhook/server.key'
 uci commit line_webhook
 /etc/init.d/line_webhook restart
 ```
@@ -74,8 +79,9 @@ Since your OpenWrt router is likely behind NAT, you need to expose the webhook e
 ### Option 2: Reverse Proxy with Cloudflare Tunnel
 
 1. Install `cloudflared` on your router
-2. Create a tunnel pointing to `localhost:5000`
-3. Use the tunnel URL as your LINE Webhook URL
+2. Create a tunnel pointing to the application port (e.g., `localhost:5000`), **not** to a static file directory
+3. Ensure your web server (if any) disables directory listing
+4. Use the tunnel URL as your LINE Webhook URL
 
 ## LINE Developer Console Setup
 
@@ -127,7 +133,10 @@ logread | grep line
 ### Test locally
 
 ```sh
-curl http://localhost:5000/
+# If TLS is enabled
+curl -k https://localhost:5000/
+# If TLS is disabled (development only)
+# curl http://localhost:5000/
 ```
 
 ### Common issues
@@ -135,6 +144,7 @@ curl http://localhost:5000/
 - **Port in use**: Change the port in configuration
 - **Missing dependencies**: Run `opkg update && opkg install python3 python3-flask python3-requests`
 - **Signature validation failed**: Verify your Channel Secret is correct
+- **TLS failed to start**: Ensure the cert/key files exist and are CA-signed; TLS 1.2+ is required
 
 ## License
 
