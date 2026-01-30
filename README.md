@@ -78,10 +78,10 @@ Since your OpenWrt router is likely behind NAT, you need to expose the webhook e
 
 ### Option 2: Reverse Proxy with Cloudflare Tunnel
 
-1. Install `cloudflared` on your router
-2. Create a tunnel pointing to the application port (e.g., `localhost:5000`), **not** to a static file directory
-3. Ensure your web server (if any) disables directory listing
-4. Use the tunnel URL as your LINE Webhook URL
+- Install `cloudflared` on the router (or another always-on host).
+- In Cloudflare Zero Trust dashboard, create a Tunnel and an ingress rule that forwards `https://your-hostname` to `http://localhost:5000` (or your configured port).
+- Publish the hostname via Cloudflare DNS and use that HTTPS URL as your LINE Webhook URL.
+- Keep other services from exposing directory listings on the same host.
 
 ## LINE Developer Console Setup
 
@@ -93,6 +93,17 @@ Since your OpenWrt router is likely behind NAT, you need to expose the webhook e
 4. Set **Webhook URL** to your exposed endpoint
 5. Enable **Use webhook**
 6. Click **Verify** to test the connection
+
+### Message Processing Modes
+
+You can choose how `process_message` replies via LuCI or UCI (`line_webhook.main.processor`):
+
+- `echo` (default): Replies with the same text.
+- `local_llm`: Pipes the user text to a local command (`local_llm_cmd` + `local_llm_args`), reading the reply from stdout. Configure an optional `local_llm_timeout` (seconds).
+- `remote_llm`: POSTs `{ input, model? }` to `remote_api_url` with `Authorization: Bearer <remote_api_key>` if provided; waits up to `remote_api_timeout` seconds.
+- `moltbot`: POSTs `{ message, model? }` to `moltbot_url` with `Authorization: Bearer <moltbot_token>`; waits up to `moltbot_timeout` seconds.
+
+More script usage detail see [Message Processing Setup Guide](docs/message-processing-guide.md) 
 
 ## Extending the Bot
 
@@ -142,7 +153,7 @@ curl -k https://localhost:5000/
 ### Common issues
 
 - **Port in use**: Change the port in configuration
-- **Missing dependencies**: Run `opkg update && opkg install python3 python3-flask python3-requests`
+- **Missing dependencies**: Run `opkg update && opkg install python3 python3-requests`
 - **Signature validation failed**: Verify your Channel Secret is correct
 - **TLS failed to start**: Ensure the cert/key files exist and are CA-signed; TLS 1.2+ is required
 

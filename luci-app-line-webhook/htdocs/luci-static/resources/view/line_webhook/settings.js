@@ -90,6 +90,74 @@ return view.extend({
         o.password = true;
         o.rmempty = false;
 
+        s = m.section(form.TypedSection, 'line_webhook', _('Message Processing'));
+        s.anonymous = true;
+
+        o = s.option(form.ListValue, 'processor', _('Processor'),
+            _('Choose how incoming text messages are handled.'));
+        o.value('echo', _('Echo test'));
+        o.value('local_llm', _('Local LLM'));
+        o.value('remote_llm', _('Remote LLM API'));
+        o.value('moltbot', _('Moltbot'));
+        o.default = 'echo';
+        o.rmempty = false;
+
+        o = s.option(form.Value, 'local_llm_cmd', _('Local LLM command'),
+            _('Executable for local LLM (text is sent via stdin). Example: /usr/bin/ollama'));
+        o.depends('processor', 'local_llm');
+        o.rmempty = false;
+
+        o = s.option(form.Value, 'local_llm_args', _('Local LLM arguments'),
+            _('Arguments appended to the command. Example: run llama3'));
+        o.depends('processor', 'local_llm');
+        o.placeholder = 'run llama3';
+
+        o = s.option(form.Value, 'local_llm_timeout', _('Local LLM timeout (s)'),
+            _('Max seconds to wait for the local LLM response'));
+        o.depends('processor', 'local_llm');
+        o.datatype = 'uinteger';
+        o.placeholder = '20';
+
+        o = s.option(form.Value, 'remote_api_url', _('Remote API URL'),
+            _('Endpoint that accepts a JSON body with the user text.'));
+        o.depends('processor', 'remote_llm');
+        o.rmempty = false;
+
+        o = s.option(form.Value, 'remote_api_key', _('Remote API Key'),
+            _('Bearer token added to the Authorization header (optional if endpoint is public).'));
+        o.password = true;
+        o.depends('processor', 'remote_llm');
+
+        o = s.option(form.Value, 'remote_api_model', _('Remote API model'),
+            _('Optional model name sent as \"model\" in the payload.'));
+        o.depends('processor', 'remote_llm');
+
+        o = s.option(form.Value, 'remote_api_timeout', _('Remote API timeout (s)'),
+            _('Max seconds to wait for the remote API.'));
+        o.depends('processor', 'remote_llm');
+        o.datatype = 'uinteger';
+        o.placeholder = '15';
+
+        o = s.option(form.Value, 'moltbot_url', _('Moltbot URL'),
+            _('Moltbot chat endpoint (POST). Example: https://api.moltbot.ai/v1/chat'));
+        o.depends('processor', 'moltbot');
+        o.rmempty = false;
+
+        o = s.option(form.Value, 'moltbot_token', _('Moltbot Token'),
+            _('Bearer token for Moltbot Authorization header.'));
+        o.password = true;
+        o.depends('processor', 'moltbot');
+
+        o = s.option(form.Value, 'moltbot_model', _('Moltbot model'),
+            _('Optional model override sent as \"model\".'));
+        o.depends('processor', 'moltbot');
+
+        o = s.option(form.Value, 'moltbot_timeout', _('Moltbot timeout (s)'),
+            _('Max seconds to wait for Moltbot.'));
+        o.depends('processor', 'moltbot');
+        o.datatype = 'uinteger';
+        o.placeholder = '15';
+
         return m.render();
     }
 });

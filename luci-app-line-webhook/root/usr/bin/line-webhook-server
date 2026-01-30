@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import base64
 import subprocess
+import shlex
 import logging
 import threading
 import queue
@@ -30,6 +31,10 @@ _event_cache = deque()
 _event_cache_set = set()
 event_queue = queue.Queue()
 MAX_EVENT_AGE_MS = 5 * 60 * 1000  # 5 minutes tolerance for replay protection
+PROCESSOR_ECHO = 'echo'
+PROCESSOR_LOCAL_LLM = 'local_llm'
+PROCESSOR_REMOTE_LLM = 'remote_llm'
+PROCESSOR_MOLTBOT = 'moltbot'
 
 
 def get_uci_config(option, default=''):
@@ -121,6 +126,170 @@ def is_timestamp_valid(timestamp_ms, max_age_ms=MAX_EVENT_AGE_MS):
     if now_ms - ts > max_age_ms:
         return False  # too old
     return True
+
+
+def extract_text_from_payload(payload):
+    """
+    Try to extract a text response from various common LLM API shapes.
+    Supports OpenAI-style choices, generic 'reply/output/response' fields,
+    or a raw string payload.
+    """
+    if payload is None:
+        return ''
+    if isinstance(payload, str):
+        return payload.strip()
+    try:
+        # OpenAI / compatible schema
+        choices = payload.get('choices') or []
+        if choices:
+            choice = choices[0]
+            # chat format
+            content = (
+                choice.get('message', {}).get('content') or
+                choice.get('text') or
+                ''
+            )
+            if content:
+                return content.strip()
+        # Generic fields
+        for key in ('reply', 'output', 'response', 'result'):
+            if key in payload and isinstance(payload[key], str):
+                return payload[key].strip()
+    except Exception:
+        pass
+    return ''
+
+
+def process_with_local_llm(text):
+    """
+    Send text to a local LLM executable. Command and args come from UCI.
+    Text is provided via stdin to avoid shell templating issues.
+    """
+    cmd = get_uci_config('local_llm_cmd', '')
+    args = get_uci_config('local_llm_args', '')
+    timeout_cfg = get_uci_config('local_llm_timeout', '20')
+    try:
+        timeout = int(timeout_cfg)
+    except Exception:
+        timeout = 20
+
+    if not cmd:
+        raise ValueError("local_llm_cmd is empty")
+
+    command = [cmd] + (shlex.split(args) if args else [])
+
+    logger.info("Routing message to local LLM: %s", ' '.join(command))
+    try:
+        result = subprocess.run(
+            command,
+            input=text,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False
+        )
+    except FileNotFoundError:
+        raise RuntimeError(f"Local LLM command not found: {cmd}")
+
+    output = (result.stdout or '').strip()
+    if not output:
+        output = (result.stderr or '').strip()
+
+    if not output:
+        output = "（local LLM 回覆為空）"
+
+    return output
+
+
+def process_with_remote_llm(text):
+    """
+    Call a remote LLM HTTP API with JSON payload: {input, model?}
+    Authorization: Bearer <remote_api_key> when provided.
+    """
+    import requests
+
+    url = get_uci_config('remote_api_url', '')
+    api_key = get_uci_config('remote_api_key', '')
+    model = get_uci_config('remote_api_model', '')
+    timeout_cfg = get_uci_config('remote_api_timeout', '15')
+    try:
+        timeout = int(timeout_cfg)
+    except Exception:
+        timeout = 15
+
+    if not url:
+        raise ValueError("remote_api_url is empty")
+
+    headers = {'Content-Type': 'application/json'}
+    if api_key:
+        headers['Authorization'] = f'Bearer {api_key}'
+
+    payload = {'input': text}
+    if model:
+        payload['model'] = model
+
+    logger.info("Routing message to remote LLM API: %s", url)
+    resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+    resp.raise_for_status()
+
+    reply = extract_text_from_payload(resp.json())
+    if not reply:
+        reply = resp.text.strip() or "（remote LLM 回覆為空）"
+    return reply
+
+
+def process_with_moltbot(text):
+    """
+    Call Moltbot chat endpoint. Expects POST JSON {message, model?}
+    with Authorization: Bearer <token>.
+    """
+    import requests
+
+    url = get_uci_config('moltbot_url', '')
+    token = get_uci_config('moltbot_token', '')
+    model = get_uci_config('moltbot_model', '')
+    timeout_cfg = get_uci_config('moltbot_timeout', '15')
+    try:
+        timeout = int(timeout_cfg)
+    except Exception:
+        timeout = 15
+
+    if not url or not token:
+        raise ValueError("moltbot_url or moltbot_token is empty")
+
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {token}'
+    }
+    payload = {'message': text}
+    if model:
+        payload['model'] = model
+
+    logger.info("Routing message to Moltbot: %s", url)
+    resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+    resp.raise_for_status()
+
+    reply = extract_text_from_payload(resp.json())
+    if not reply:
+        reply = resp.text.strip() or "（Moltbot 回覆為空）"
+    return reply
+
+
+def route_message_text(text):
+    """Dispatch text to the selected processor and return reply text."""
+    processor = get_uci_config('processor', PROCESSOR_ECHO).lower() or PROCESSOR_ECHO
+    try:
+        if processor == PROCESSOR_LOCAL_LLM:
+            return process_with_local_llm(text)
+        if processor == PROCESSOR_REMOTE_LLM:
+            return process_with_remote_llm(text)
+        if processor == PROCESSOR_MOLTBOT:
+            return process_with_moltbot(text)
+        # Default: echo
+        return text
+    except Exception as e:
+        logger.error("Processor '%s' failed: %s", processor, e)
+        return f"[{processor} error] " + text
 
 
 def handle_event(event, access_token):
@@ -224,9 +393,7 @@ def process_message(event, access_token):
 
     if message_type == 'text':
         text = event['message'].get('text', '')
-        # Default: Echo the message
-        # TODO: Extend here for custom reply logic
-        reply_text = text
+        reply_text = route_message_text(text)
         messages = [{'type': 'text', 'text': reply_text}]
     else:
         messages = [{'type': 'text', 'text': 'Unsupported message type.'}]

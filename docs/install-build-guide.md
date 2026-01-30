@@ -61,11 +61,7 @@ make package/luci-app-line-webhook/compile V=s
 
 The resulting IPK will be in `bin/packages/<arch>/linebot/`.
 
-## 4. GitHub Actions CI
-
-Commits containing `[ci]` in the message trigger the GitHub Actions workflow (`.github/workflows/build.yml`). It builds `luci-app-line-webhook` for `x86_64-24.10.5` via `openwrt/gh-action-sdk` and uploads the `.ipk` artifacts. Retrieve them from the Actions tab.
-
-## 5. Troubleshooting
+## 4. Troubleshooting
 
 * **Feed not found**: Re-run `./scripts/feeds update linebot` and confirm the feed line is present in `feeds.conf.default`.
 * **Kernel or libc mismatch**: Rebuild against your exact target (same branch, target, and SDK version) instead of forcing the install.
