@@ -18,9 +18,8 @@ This guide explains how to deploy the new `process_message` modes and choose the
 | Mode | When to use | Minimum settings |
 | --- | --- | --- |
 | `echo` | Simple connectivity test | `processor=echo` |
-| `local_llm` | You have a local model binary (e.g., ollama) on the router | `local_llm_cmd`, optional `local_llm_args`, `local_llm_timeout` |
-| `remote_llm` | Call a generic HTTP LLM API | `remote_api_url`, optional `remote_api_key`, `remote_api_model`, `remote_api_timeout` |
-| `moltbot` | Use Moltbot hosted API | `moltbot_url`, `moltbot_token`, optional `moltbot_model`, `moltbot_timeout` |
+| `remote_llm` | Call Ollama HTTP API | `remote_api_url`, optional `remote_api_key`, `remote_api_model`, `remote_api_timeout` |
+| `openclaw` | Use OpenClaw API | `openclaw_url`, `openclaw_token`, optional `openclaw_model`, `openclaw_timeout` |
 
 ## Common base config
 ```sh
@@ -41,44 +40,39 @@ uci commit line_webhook
 ```
 Send any text; it should echo back.
 
-### 2) Local LLM
-Example uses ollama:
-```sh
-uci set line_webhook.main.processor='local_llm'
-uci set line_webhook.main.local_llm_cmd='/usr/bin/ollama'
-uci set line_webhook.main.local_llm_args='run llama3'
-uci set line_webhook.main.local_llm_timeout='20'
-uci commit line_webhook
-/etc/init.d/line_webhook restart
-```
-Notes:
-- Text is piped to stdin of the command; stdout is returned to the user.
-- Keep timeouts modest to avoid webhook timeouts (LINE requires <2s end-to-end; processing happens async but long runs still delay replies).
-
-### 3) Remote LLM API
-OpenAI-compatible example:
+### 2) Remote LLM API (Ollama)
+Ollama `/api/chat` example:
 ```sh
 uci set line_webhook.main.processor='remote_llm'
-uci set line_webhook.main.remote_api_url='https://api.openai.com/v1/chat/completions'
-uci set line_webhook.main.remote_api_key='<YOUR_API_KEY>'
-uci set line_webhook.main.remote_api_model='gpt-4o-mini'
-uci set line_webhook.main.remote_api_timeout='15'
+uci set line_webhook.main.remote_api_url='http://YOUR_HOST:11434/api/chat'
+uci set line_webhook.main.remote_api_model='mistral'
+uci set line_webhook.main.remote_api_timeout='60'
 uci commit line_webhook
 /etc/init.d/line_webhook restart
 ```
-Payload sent: `{ "input": "<user text>", "model": "<remote_api_model?>" }`
 
-### 4) Moltbot
+Payload sent:
+```json
+{
+  "model": "<remote_api_model>",
+  "messages": [{"role": "user", "content": "<user text>"}]
+}
+```
+
+Response: Streaming NDJSON where each line contains `{"message": {"content": "..."}, "done": false/true}`. All `content` tokens are concatenated to form the final reply.
+
+### 3) OpenClaw
 ```sh
-uci set line_webhook.main.processor='moltbot'
-uci set line_webhook.main.moltbot_url='https://api.moltbot.ai/v1/chat'
-uci set line_webhook.main.moltbot_token='<MOLTBOT_TOKEN>'
-uci set line_webhook.main.moltbot_model='default'   # optional
-uci set line_webhook.main.moltbot_timeout='15'
+uci set line_webhook.main.processor='openclaw'
+uci set line_webhook.main.openclaw_url='https://your-openclaw-server/api/chat'
+uci set line_webhook.main.openclaw_token='<OPENCLAW_TOKEN>'
+uci set line_webhook.main.openclaw_model='default'   # optional
+uci set line_webhook.main.openclaw_timeout='60'
 uci commit line_webhook
 /etc/init.d/line_webhook restart
 ```
 Payload sent: `{ "message": "<user text>", "model": "<optional>" }`
+Supports both regular JSON and streaming NDJSON responses.
 
 ## Verification
 1. Send a message from LINE; expect a reply per the selected mode.
@@ -93,6 +87,5 @@ Payload sent: `{ "message": "<user text>", "model": "<optional>" }`
 
 ## Troubleshooting tips
 - Signature errors: re-check `channel_secret`.
-- Empty replies: ensure your LLM binary/API returns text on stdout/JSON; increase timeout if needed.
-- Command not found: verify `local_llm_cmd` path is executable.
+- Empty replies: ensure your LLM API returns valid JSON; increase timeout if needed.
 - TLS issues: confirm cert/key paths and enable `use_tls=1` when ready.

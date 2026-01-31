@@ -12,6 +12,7 @@ For detailed install/build steps, see the [Install & Build Guide](docs/install-b
 - **Procd Service**: Managed as a native OpenWrt service
 - **Extensible**: Easy to add custom reply logic
 - **TLS Ready**: Supports TLS 1.2/1.3 with hardened cipher suites
+- **Grafana Alerting**: Receive Grafana alerts via `/grafana` webhook endpoint
 
 ## Requirements
 
@@ -99,11 +100,54 @@ Since your OpenWrt router is likely behind NAT, you need to expose the webhook e
 You can choose how `process_message` replies via LuCI or UCI (`line_webhook.main.processor`):
 
 - `echo` (default): Replies with the same text.
-- `local_llm`: Pipes the user text to a local command (`local_llm_cmd` + `local_llm_args`), reading the reply from stdout. Configure an optional `local_llm_timeout` (seconds).
-- `remote_llm`: POSTs `{ input, model? }` to `remote_api_url` with `Authorization: Bearer <remote_api_key>` if provided; waits up to `remote_api_timeout` seconds.
-- `moltbot`: POSTs `{ message, model? }` to `moltbot_url` with `Authorization: Bearer <moltbot_token>`; waits up to `moltbot_timeout` seconds.
+- `remote_llm`: Calls Ollama's `/api/chat` endpoint with streaming NDJSON support. Configure `remote_api_url`, `remote_api_model`, and optional `remote_api_timeout`.
+- `openclaw`: POSTs `{ message, model? }` to `openclaw_url` with `Authorization: Bearer <openclaw_token>`; supports both regular JSON and streaming NDJSON responses.
 
 More script usage detail see [Message Processing Setup Guide](docs/message-processing-guide.md) 
+
+### Grafana Alerting Integration
+
+The webhook server includes a dedicated `/grafana` endpoint to receive Grafana alerting notifications and forward them to LINE.
+
+#### Setup Steps
+
+1. **Get your LINE User ID**:
+   - Send any message to your LINE Bot
+   - Check the logs: `logread | grep "Message from user"`
+   - Copy the `Uxxxxxxxx...` ID (33 characters)
+
+2. **Configure the User ID and Secret**:
+   ```sh
+   uci set line_webhook.main.grafana_user_id='Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+   uci set line_webhook.main.grafana_secret='your_random_secret_here'
+   uci commit line_webhook
+   /etc/init.d/line_webhook restart
+   ```
+   Or via LuCI: **Services → LINE Webhook → Grafana Integration**
+
+3. **Configure Grafana Contact Point**:
+   - In Grafana, go to **Alerting → Contact points**
+   - Add a new contact point with type **Webhook**
+   - Set URL to: `http://YOUR_SERVER:PORT/grafana`
+   - Expand **Optional Webhook settings**
+   - Set **Authorization Header** (Credentials) to: `Bearer your_random_secret_here`
+   - Save and test
+
+#### Example LINE Message
+
+When an alert fires, you'll receive a formatted message like:
+
+```
+🔥 [FIRING:1] High CPU Usage
+狀態: FIRING
+
+【High CPU usage】
+  摘要: CPU usage is above 80%
+  severity: critical
+  instance: server-1
+
+🔗 https://grafana.example.com/alerting/...
+```
 
 ## Extending the Bot
 

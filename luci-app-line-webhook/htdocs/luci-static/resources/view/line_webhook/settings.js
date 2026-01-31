@@ -125,27 +125,10 @@ return view.extend({
         o = s.option(form.ListValue, 'processor', _('Processor'),
             _('Choose how incoming text messages are handled.'));
         o.value('echo', _('Echo test'));
-        o.value('local_llm', _('Local LLM'));
-        o.value('remote_llm', _('Remote LLM API'));
-        o.value('moltbot', _('Moltbot'));
+        o.value('remote_llm', _('Remote LLM API (Ollama)'));
+        o.value('openclaw', _('OpenClaw'));
         o.default = 'echo';
         o.rmempty = false;
-
-        o = s.option(form.Value, 'local_llm_cmd', _('Local LLM command'),
-            _('Executable for local LLM (text is sent via stdin). Example: /usr/bin/ollama'));
-        o.depends('processor', 'local_llm');
-        o.rmempty = false;
-
-        o = s.option(form.Value, 'local_llm_args', _('Local LLM arguments'),
-            _('Arguments appended to the command. Example: run llama3'));
-        o.depends('processor', 'local_llm');
-        o.placeholder = 'run llama3';
-
-        o = s.option(form.Value, 'local_llm_timeout', _('Local LLM timeout (s)'),
-            _('Max seconds to wait for the local LLM response'));
-        o.depends('processor', 'local_llm');
-        o.datatype = 'uinteger';
-        o.placeholder = '20';
 
         o = s.option(form.Value, 'remote_api_url', _('Remote API URL'),
             _('Endpoint that accepts a JSON body with the user text.'));
@@ -165,27 +148,47 @@ return view.extend({
             _('Max seconds to wait for the remote API.'));
         o.depends('processor', 'remote_llm');
         o.datatype = 'uinteger';
-        o.placeholder = '15';
+        o.placeholder = '60';
 
-        o = s.option(form.Value, 'moltbot_url', _('Moltbot URL'),
-            _('Moltbot chat endpoint (POST). Example: https://api.moltbot.ai/v1/chat'));
-        o.depends('processor', 'moltbot');
+        o = s.option(form.Value, 'openclaw_url', _('OpenClaw URL'),
+            _('OpenClaw chat endpoint (POST).'));
+        o.depends('processor', 'openclaw');
         o.rmempty = false;
 
-        o = s.option(form.Value, 'moltbot_token', _('Moltbot Token'),
-            _('Bearer token for Moltbot Authorization header.'));
+        o = s.option(form.Value, 'openclaw_token', _('OpenClaw Token'),
+            _('Bearer token for OpenClaw Authorization header.'));
         o.password = true;
-        o.depends('processor', 'moltbot');
+        o.depends('processor', 'openclaw');
 
-        o = s.option(form.Value, 'moltbot_model', _('Moltbot model'),
+        o = s.option(form.Value, 'openclaw_model', _('OpenClaw model'),
             _('Optional model override sent as \"model\".'));
-        o.depends('processor', 'moltbot');
+        o.depends('processor', 'openclaw');
 
-        o = s.option(form.Value, 'moltbot_timeout', _('Moltbot timeout (s)'),
-            _('Max seconds to wait for Moltbot.'));
-        o.depends('processor', 'moltbot');
+        o = s.option(form.Value, 'openclaw_timeout', _('OpenClaw timeout (s)'),
+            _('Max seconds to wait for OpenClaw.'));
+        o.depends('processor', 'openclaw');
         o.datatype = 'uinteger';
-        o.placeholder = '15';
+        o.placeholder = '60';
+
+        s = m.section(form.TypedSection, 'line_webhook', _('Grafana Integration'));
+        s.anonymous = true;
+        s.description = _('Configure Grafana webhook alerts. Set Grafana contact point URL to: http://YOUR_SERVER:PORT/grafana');
+
+        o = s.option(form.Value, 'grafana_user_id', _('LINE User ID'),
+            _('The LINE user ID to receive Grafana alerts. Format: Uxxxxxxxx... (33 characters). You can get your user ID by sending a message to the bot and checking the logs.'));
+        o.placeholder = 'Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+        o.validate = function(section_id, value) {
+            if (!value || value === '') return true;
+            if (!/^U[a-f0-9]{32}$/.test(value)) {
+                return _('Invalid LINE User ID format. Must start with U followed by 32 hex characters.');
+            }
+            return true;
+        };
+
+        o = s.option(form.Value, 'grafana_secret', _('Webhook Secret'),
+            _('Bearer token for authentication. In Grafana, set Authorization header to: Bearer YOUR_SECRET'));
+        o.password = true;
+        o.placeholder = _('Enter a random secret string');
 
         return m.render();
     }
