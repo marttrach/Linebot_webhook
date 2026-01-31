@@ -77,6 +77,35 @@ return view.extend({
         o.default = '0.0.0.0';
         o.rmempty = false;
 
+        o = s.option(form.ListValue, 'log_level', _('Log Level'),
+            _('Set the logging verbosity. Debug mode shows maximum detail for troubleshooting.'));
+        o.value('critical', _('Critical (致命)'));
+        o.value('error', _('Error (錯誤)'));
+        o.value('warning', _('Warning (警告)'));
+        o.value('info', _('Info (資訊)'));
+        o.value('debug', _('Debug (除錯)'));
+        o.default = 'info';
+        o.rmempty = false;
+
+        s = m.section(form.TypedSection, 'line_webhook', _('TLS/SSL Settings'));
+        s.anonymous = true;
+
+        o = s.option(form.Flag, 'use_tls', _('Enable TLS'),
+            _('Enable HTTPS with TLS 1.2+. Requires valid certificate and key files.'));
+        o.rmempty = false;
+
+        o = s.option(form.Value, 'tls_cert', _('TLS Certificate Path'),
+            _('Path to the TLS certificate file (PEM format). Example: /etc/ssl/line_webhook/server.crt'));
+        o.depends('use_tls', '1');
+        o.default = '/etc/ssl/line_webhook/server.crt';
+        o.rmempty = false;
+
+        o = s.option(form.Value, 'tls_key', _('TLS Private Key Path'),
+            _('Path to the TLS private key file (PEM format). Example: /etc/ssl/line_webhook/server.key'));
+        o.depends('use_tls', '1');
+        o.default = '/etc/ssl/line_webhook/server.key';
+        o.rmempty = false;
+
         s = m.section(form.TypedSection, 'line_webhook', _('LINE API Credentials'));
         s.anonymous = true;
 
