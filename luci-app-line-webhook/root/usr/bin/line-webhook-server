@@ -18,11 +18,47 @@ from pathlib import Path
 from collections import deque
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+# Log level mapping: 致命 > 錯誤 > 警告 > 資訊 > 除錯
+LOG_LEVELS = {
+    'critical': logging.CRITICAL,  # 致命
+    'error': logging.ERROR,        # 錯誤
+    'warning': logging.WARNING,    # 警告
+    'info': logging.INFO,          # 資訊
+    'debug': logging.DEBUG,        # 除錯
+}
+
+
+def setup_logging():
+    """Configure logging based on UCI config."""
+    # Read log level from UCI (must use subprocess directly here)
+    log_level_str = 'info'
+    try:
+        result = subprocess.run(
+            ['uci', 'get', 'line_webhook.main.log_level'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            log_level_str = result.stdout.strip().lower()
+    except Exception:
+        pass
+
+    level = LOG_LEVELS.get(log_level_str, logging.INFO)
+
+    # Configure logging format - more detailed for debug mode
+    if level == logging.DEBUG:
+        log_format = '%(asctime)s - %(levelname)s - [%(funcName)s:%(lineno)d] %(message)s'
+    else:
+        log_format = '%(asctime)s - %(levelname)s - %(message)s'
+
+    logging.basicConfig(
+        level=level,
+        format=log_format,
+        force=True  # Override any existing config
+    )
+    return logging.getLogger(__name__)
+
+
+# Initialize logger (will be reconfigured in main())
 logger = logging.getLogger(__name__)
 
 # Cache to provide simple idempotency for webhookEventId
@@ -432,9 +468,26 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         """Handle POST requests - webhook events."""
+        logger.debug("=" * 60)
+        logger.debug("Received POST request")
+        logger.debug(f"Request path: {self.path}")
+        logger.debug(f"Client address: {self.client_address}")
+
+        # Debug: Log all headers
+        logger.debug("--- Request Headers ---")
+        for header, value in self.headers.items():
+            # Mask sensitive headers in logs
+            if 'authorization' in header.lower():
+                logger.debug(f"  {header}: [MASKED]")
+            else:
+                logger.debug(f"  {header}: {value}")
+
         # Get configuration
         access_token = get_uci_config('access_token')
         channel_secret = get_uci_config('channel_secret')
+
+        logger.debug(f"Channel secret length: {len(channel_secret) if channel_secret else 0}")
+        logger.debug(f"Access token present: {bool(access_token)}")
 
         if not access_token or not channel_secret:
             logger.error("Missing access_token or channel_secret in configuration")
@@ -445,14 +498,47 @@ class WebhookHandler(BaseHTTPRequestHandler):
         content_length = int(self.headers.get('Content-Length', 0))
         raw_body = self.rfile.read(content_length) if content_length > 0 else b''
 
+        # Debug: Log raw body details
+        logger.debug("--- Request Body ---")
+        logger.debug(f"Content-Length header: {content_length}")
+        logger.debug(f"Actual body length: {len(raw_body)}")
+        logger.debug(f"Raw body (repr): {raw_body!r}")
+        try:
+            logger.debug(f"Raw body (decoded): {raw_body.decode('utf-8')}")
+        except Exception as e:
+            logger.debug(f"Failed to decode body as UTF-8: {e}")
+
         # Get signature
         signature = self.headers.get('X-Line-Signature', '') or self.headers.get('x-line-signature', '')
 
+        logger.debug("--- Signature Validation ---")
+        logger.debug(f"Received signature: {signature}")
+
+        # Debug: Calculate and show expected signature
+        if channel_secret and raw_body:
+            import hashlib as hs
+            import hmac as hm
+            import base64 as b64
+            expected_hash = hm.new(
+                channel_secret.encode('utf-8'),
+                raw_body,
+                hs.sha256
+            ).digest()
+            expected_sig = b64.b64encode(expected_hash).decode('utf-8')
+            logger.debug(f"Calculated signature: {expected_sig}")
+            logger.debug(f"Signatures match: {signature == expected_sig}")
+
         # Validate signature
         if not validate_signature(raw_body, signature, channel_secret):
-            logger.warning("Invalid signature")
+            logger.warning("Invalid signature - request rejected")
+            logger.debug("Signature validation failed. Possible causes:")
+            logger.debug("  1. Wrong channel_secret in UCI config")
+            logger.debug("  2. Request body modified by proxy/CDN")
+            logger.debug("  3. Signature header missing or malformed")
             self.send_json_response(403, {"message": "invalid signature"})
             return
+
+        logger.debug("Signature validation passed")
 
         # Parse and process events
         try:
@@ -495,6 +581,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
 def main():
     """Main entry point."""
+    global logger
+    logger = setup_logging()
+
+    log_level = get_uci_config('log_level', 'info')
+    logger.info(f"Log level set to: {log_level.upper()}")
+    logger.debug("Debug logging is enabled - showing maximum log details")
+
     port = int(get_uci_config('port', '5000'))
     bind_address = get_uci_config('bind_address', '0.0.0.0')
     use_tls = get_uci_config('use_tls', '0') == '1'
