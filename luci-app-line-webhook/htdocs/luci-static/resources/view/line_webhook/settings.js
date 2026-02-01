@@ -127,6 +127,8 @@ return view.extend({
         o.value('echo', _('Echo test'));
         o.value('remote_llm', _('Remote LLM API (Ollama)'));
         o.value('openclaw', _('OpenClaw'));
+        o.value('anythingllm', _('AnythingLLM'));
+        o.value('n8n', _('N8N Workflow'));
         o.default = 'echo';
         o.rmempty = false;
 
@@ -169,6 +171,47 @@ return view.extend({
         o.depends('processor', 'openclaw');
         o.datatype = 'uinteger';
         o.placeholder = '60';
+
+        o = s.option(form.Value, 'anythingllm_url', _('AnythingLLM URL'),
+            _('AnythingLLM workspace chat endpoint. Format: http://HOST:3001/api/v1/workspace/SLUG/chat'));
+        o.depends('processor', 'anythingllm');
+        o.placeholder = 'http://localhost:3001/api/v1/workspace/my-workspace/chat';
+        o.rmempty = false;
+
+        o = s.option(form.Value, 'anythingllm_api_key', _('AnythingLLM API Key'),
+            _('API Key from AnythingLLM Settings → API Keys.'));
+        o.password = true;
+        o.depends('processor', 'anythingllm');
+
+        o = s.option(form.ListValue, 'anythingllm_mode', _('AnythingLLM Mode'),
+            _('Chat mode: chat (conversational) or query (single response).'));
+        o.value('chat', _('Chat'));
+        o.value('query', _('Query'));
+        o.default = 'chat';
+        o.depends('processor', 'anythingllm');
+
+        o = s.option(form.Value, 'anythingllm_timeout', _('AnythingLLM timeout (s)'),
+            _('Max seconds to wait for AnythingLLM response.'));
+        o.depends('processor', 'anythingllm');
+        o.datatype = 'uinteger';
+        o.placeholder = '60';
+
+        o = s.option(form.Value, 'n8n_webhook_url', _('N8N Webhook URL'),
+            _('N8N webhook trigger URL. Messages are forwarded here for async processing with R2/AnythingLLM.'));
+        o.depends('processor', 'n8n');
+        o.placeholder = 'http://your-n8n:5678/webhook/line';
+        o.rmempty = false;
+
+        o = s.option(form.Value, 'n8n_webhook_secret', _('N8N Webhook Secret'),
+            _('Optional secret to authenticate webhook requests (X-Webhook-Secret header).'));
+        o.password = true;
+        o.depends('processor', 'n8n');
+
+        o = s.option(form.Value, 'n8n_timeout', _('N8N timeout (s)'),
+            _('Max seconds to wait for N8N webhook acknowledgment (response is async).'));
+        o.depends('processor', 'n8n');
+        o.datatype = 'uinteger';
+        o.placeholder = '10';
 
         s = m.section(form.TypedSection, 'line_webhook', _('Grafana Integration'));
         s.anonymous = true;

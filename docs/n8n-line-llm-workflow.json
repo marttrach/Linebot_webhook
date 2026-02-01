@@ -1,0 +1,280 @@
+{
+  "name": "LINE Webhook → AnythingLLM → R2 → Push",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "line",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and validate webhook data\nconst body = $input.first().json.body || $input.first().json;\n\nconst userId = body.user_id;\nconst message = body.message;\nconst accessToken = body.access_token;\nconst timestamp = body.timestamp || Date.now();\n\nif (!userId || !message || !accessToken) {\n  throw new Error('Missing required fields: user_id, message, or access_token');\n}\n\n// Memory key based on user\nconst memoryKey = `line_chat_${userId}`;\n\n// Get existing conversation from workflow static data\nlet conversation = [];\ntry {\n  const staticData = $getWorkflowStaticData('global');\n  conversation = staticData[memoryKey] || [];\n} catch (e) {\n  conversation = [];\n}\n\n// Add user message to conversation\nconversation.push({\n  role: 'user',\n  content: message,\n  timestamp: timestamp\n});\n\n// Keep only last 20 messages to avoid context overflow\nif (conversation.length > 20) {\n  conversation = conversation.slice(-20);\n}\n\nreturn {\n  userId,\n  message,\n  accessToken,\n  memoryKey,\n  conversation,\n  timestamp\n};"
+      },
+      "id": "parse-request",
+      "name": "Parse Request & Memory",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ANYTHINGLLM_URL }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message: $json.message, mode: 'chat' }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "anythingllm",
+      "name": "AnythingLLM Chat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "anythingllm-auth",
+          "name": "AnythingLLM API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process AnythingLLM response\nconst response = $input.first().json;\nconst prevData = $('Parse Request & Memory').first().json;\n\nlet textResponse = '';\nlet imageBase64 = null;\nlet imageType = null;\n\n// Extract text response\nif (response.textResponse) {\n  textResponse = response.textResponse;\n} else if (response.response) {\n  textResponse = response.response;\n} else if (response.message) {\n  textResponse = typeof response.message === 'string' ? response.message : response.message.content || '';\n}\n\n// Check if response contains image data (base64)\nconst imageMatch = textResponse.match(/\\[IMAGE:(data:image\\/(\\w+);base64,([^\\]]+))\\]/);\nif (imageMatch) {\n  imageType = imageMatch[2]; // png, jpg, etc.\n  imageBase64 = imageMatch[3];\n  textResponse = textResponse.replace(imageMatch[0], '').trim();\n}\n\n// Also check for markdown image with base64\nconst mdImageMatch = textResponse.match(/!\\[.*?\\]\\(data:image\\/(\\w+);base64,([^)]+)\\)/);\nif (mdImageMatch) {\n  imageType = mdImageMatch[1];\n  imageBase64 = mdImageMatch[2];\n  textResponse = textResponse.replace(mdImageMatch[0], '').trim();\n}\n\n// Update conversation memory\nlet conversation = prevData.conversation || [];\nconversation.push({\n  role: 'assistant',\n  content: textResponse || '[Image sent]',\n  timestamp: Date.now()\n});\n\n// Save to workflow static data\ntry {\n  const staticData = $getWorkflowStaticData('global');\n  staticData[prevData.memoryKey] = conversation;\n} catch (e) {\n  console.log('Failed to save memory:', e);\n}\n\nreturn {\n  ...prevData,\n  textResponse: textResponse || null,\n  hasImage: !!imageBase64,\n  imageBase64,\n  imageType,\n  conversation\n};"
+      },
+      "id": "process-response",
+      "name": "Process Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.hasImage }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-image",
+      "name": "Has Image?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $env.R2_ENDPOINT }}/{{ $env.R2_BUCKET }}/line-images/{{ $json.userId }}_{{ Date.now() }}.{{ $json.imageType }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "=image/{{ $json.imageType }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "body": "={{ Buffer.from($json.imageBase64, 'base64') }}",
+        "options": {}
+      },
+      "id": "upload-r2",
+      "name": "Upload to R2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "r2-auth",
+          "name": "Cloudflare R2 Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.line.me/v2/bot/message/push",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Parse Request & Memory').first().json.accessToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $('Parse Request & Memory').first().json.userId, messages: [{ type: 'image', originalContentUrl: $env.R2_PUBLIC_URL + '/line-images/' + $('Parse Request & Memory').first().json.userId + '_' + Date.now() + '.' + $('Process Response').first().json.imageType, previewImageUrl: $env.R2_PUBLIC_URL + '/line-images/' + $('Parse Request & Memory').first().json.userId + '_' + Date.now() + '.' + $('Process Response').first().json.imageType }] }) }}",
+        "options": {}
+      },
+      "id": "push-image",
+      "name": "Push Image to LINE",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1540, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.line.me/v2/bot/message/push",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.accessToken }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $json.userId, messages: [{ type: 'text', text: $json.textResponse || '(No response)' }] }) }}",
+        "options": {}
+      },
+      "id": "push-text",
+      "name": "Push Text to LINE",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, timestamp: Date.now() } }}"
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1760, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Parse Request & Memory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Request & Memory": {
+      "main": [
+        [
+          {
+            "node": "AnythingLLM Chat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AnythingLLM Chat": {
+      "main": [
+        [
+          {
+            "node": "Process Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Response": {
+      "main": [
+        [
+          {
+            "node": "Has Image?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Image?": {
+      "main": [
+        [
+          {
+            "node": "Upload to R2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Push Text to LINE",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload to R2": {
+      "main": [
+        [
+          {
+            "node": "Push Image to LINE",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Push Image to LINE": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Push Text to LINE": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "saveManualExecutions": true,
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "pinData": {}
+}

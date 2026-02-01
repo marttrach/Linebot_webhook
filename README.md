@@ -102,8 +102,47 @@ You can choose how `process_message` replies via LuCI or UCI (`line_webhook.main
 - `echo` (default): Replies with the same text.
 - `remote_llm`: Calls Ollama's `/api/chat` endpoint with streaming NDJSON support. Configure `remote_api_url`, `remote_api_model`, and optional `remote_api_timeout`.
 - `openclaw`: POSTs `{ message, model? }` to `openclaw_url` with `Authorization: Bearer <openclaw_token>`; supports both regular JSON and streaming NDJSON responses.
+- `anythingllm`: Calls AnythingLLM's workspace chat API. Configure `anythingllm_url`, `anythingllm_api_key`, `anythingllm_mode` (default: `chat`), and optional `anythingllm_timeout`.
+- `n8n`: Forwards messages to N8N workflow for advanced processing with Cloudflare R2 image hosting, conversation memory, and async responses via Push API.
 
-More script usage detail see [Message Processing Setup Guide](docs/message-processing-guide.md) 
+#### AnythingLLM Setup
+
+1. **Get your API Key** from AnythingLLM: Settings → API Keys → Generate New API Key
+2. **Find your Workspace Slug** from the AnythingLLM URL (e.g., `my-workspace`)
+3. **Configure via UCI**:
+   ```sh
+   uci set line_webhook.main.processor='anythingllm'
+   uci set line_webhook.main.anythingllm_url='http://<anythingllm-host>:3001/api/v1/workspace/<workspace-slug>/chat'
+   uci set line_webhook.main.anythingllm_api_key='<your-api-key>'
+   uci set line_webhook.main.anythingllm_mode='chat'
+   uci commit line_webhook
+   /etc/init.d/line_webhook restart
+   ```
+
+#### N8N Workflow Setup
+
+The N8N processor enables advanced features like image generation with R2 hosting and per-user conversation memory.
+
+1. **Import the workflow**: Load `docs/n8n-line-llm-workflow.json` into your N8N instance
+2. **Configure environment variables** in N8N (R2, AnythingLLM endpoints)
+3. **Configure via UCI**:
+   ```sh
+   uci set line_webhook.main.processor='n8n'
+   uci set line_webhook.main.n8n_webhook_url='http://<n8n-host>:5678/webhook/line'
+   uci set line_webhook.main.n8n_webhook_secret='<optional-secret>'
+   uci commit line_webhook
+   /etc/init.d/line_webhook restart
+   ```
+
+For detailed setup instructions, see [N8N Workflow Setup Guide](docs/n8n-setup-guide.md).
+
+### Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Message Processing Guide](docs/message-processing-guide.md) | Processor configuration and troubleshooting |
+| [N8N Workflow Setup](docs/n8n-setup-guide.md) | N8N + R2 + AnythingLLM integration |
+| [Install & Build Guide](docs/install-build-guide.md) | Building the IPK package | 
 
 ### Grafana Alerting Integration
 
