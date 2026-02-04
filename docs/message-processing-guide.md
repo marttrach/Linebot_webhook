@@ -19,7 +19,7 @@ This guide explains how to deploy the new `process_message` modes and choose the
 | --- | --- | --- |
 | `echo` | Simple connectivity test | `processor=echo` |
 | `remote_llm` | Call Ollama HTTP API | `remote_api_url`, optional `remote_api_key`, `remote_api_model`, `remote_api_timeout` |
-| `openclaw` | Use OpenClaw API | `openclaw_url`, `openclaw_token`, optional `openclaw_model`, `openclaw_timeout` |
+| `openclaw` | OpenClaw Gateway via bridge | `openclaw_bridge_url` (default http://127.0.0.1:5001/message), `openclaw_timeout` |
 
 ## Common base config
 ```sh
@@ -61,18 +61,93 @@ Payload sent:
 
 Response: Streaming NDJSON where each line contains `{"message": {"content": "..."}, "done": false/true}`. All `content` tokens are concatenated to form the final reply.
 
-### 3) OpenClaw
-```sh
-uci set line_webhook.main.processor='openclaw'
-uci set line_webhook.main.openclaw_url='https://your-openclaw-server/api/chat'
-uci set line_webhook.main.openclaw_token='<OPENCLAW_TOKEN>'
-uci set line_webhook.main.openclaw_model='default'   # optional
-uci set line_webhook.main.openclaw_timeout='60'
-uci commit line_webhook
-/etc/init.d/line_webhook restart
+### 3) OpenClaw (Gateway Bridge)
+Forwards messages to OpenClaw via an HTTP bridge. The bridge (Node.js script on OpenClaw host) handles Gateway WS protocol (connect.challenge, ed25519 device signature, agent RPC).
+
+**Architecture:**
 ```
-Payload sent: `{ "message": "<user text>", "model": "<optional>" }`
-Supports both regular JSON and streaming NDJSON responses.
+OpenWrt (HTTP) → Bridge (http://host:5001) → Gateway WS (ws://127.0.0.1:18789)
+```
+
+**Part 1: OpenClaw Host Setup (Bridge)**
+
+1.  **Install the bridge script**
+    Copy `openclaw-bridge/openclaw-line-bridge.js` to your OpenClaw host.
+
+2.  **Install dependencies**
+    ```sh
+    npm install ws
+    ```
+
+3.  **Run the bridge**
+    
+    **Option A: Manual Run (Test)**
+    ```sh
+    node openclaw-line-bridge.js --port 5001
+    ```
+
+    **Option B: PM2 (Recommended for production)**
+    ```sh
+    npm install -g pm2
+    pm2 start openclaw-line-bridge.js --name "line-bridge" -- --port 5001
+    pm2 save
+    pm2 startup
+    ```
+
+    **Option C: Systemd (Standard Linux)**
+    Create `/etc/systemd/system/openclaw-line-bridge.service`:
+    ```ini
+    [Unit]
+    Description=OpenClaw LINE Bridge
+    After=network.target
+
+    [Service]
+    Type=simple
+    User=root
+    WorkingDirectory=/path/to/openclaw-bridge
+    ExecStart=/usr/bin/node openclaw-line-bridge.js
+    Restart=always
+    Environment=BRIDGE_PORT=5001
+    Environment=OPENCLAW_GATEWAY_URL=ws://127.0.0.1:18789
+
+    [Install]
+    WantedBy=multi-user.target
+    ```
+    Enable and start:
+    ```sh
+    systemctl enable openclaw-line-bridge
+    systemctl start openclaw-line-bridge
+    ```
+
+    The bridge will:
+    - Listen on `http://0.0.0.0:5001/message` (accessible from OpenWrt)
+    - Connect to Gateway at `ws://127.0.0.1:18789`
+    - Handle protocol handshake (connect.challenge, device signature)
+    - Forward messages via `agent` RPC
+
+**Part 2: OpenWrt Side Setup**
+
+1.  **Configure Processor**
+    ```sh
+    uci set line_webhook.main.processor='openclaw'
+    ```
+
+2.  **Configure Bridge URL**
+    Set the HTTP endpoint to your bridge (adjust IP if needed).
+    ```sh
+    uci set line_webhook.main.openclaw_bridge_url='http://192.168.1.100:5001/message'
+    ```
+
+3.  **Complete Setup**
+    ```sh
+    uci set line_webhook.main.openclaw_timeout='60'
+    uci commit line_webhook
+    /etc/init.d/line_webhook restart
+    ```
+
+**How it works:**
+- **Inbound (User → Agent)**: Text and media forwarded to bridge via HTTP POST. Bridge calls `agent` RPC.
+- **Outbound (Agent → User)**: Bridge returns `{ text, channelData }`. OpenWrt converts to LINE messages (Flex, Template, Quick Reply).
 
 ## Verification
 1. Send a message from LINE; expect a reply per the selected mode.

@@ -272,73 +272,140 @@ def process_with_remote_llm(text):
     return reply
 
 
-def process_with_openclaw(text):
+def parse_openclaw_payload(text, channel_data):
     """
-    Call OpenClaw chat endpoint. Expects POST JSON {message, model?}
-    with Authorization: Bearer <token>.
-    Supports both regular JSON and streaming NDJSON responses.
+    Convert OpenClaw payload (text + channelData) into a list of LINE message objects.
+    Reference: https://developers.line.biz/en/reference/messaging-api/#message-objects
+    """
+    messages = []
+    
+    # Base text message (if present)
+    if text and text.strip():
+        messages.append({'type': 'text', 'text': text})
+    
+    # Parse channelData for LINE-specific rich content
+    line_data = channel_data.get('line', {})
+    
+    # 1. Flex Message
+    if 'flexMessage' in line_data:
+        flex = line_data['flexMessage']
+        messages.append({
+            'type': 'flex',
+            'altText': flex.get('altText', 'Flex Message'),
+            'contents': flex.get('contents', {})
+        })
+        
+    # 2. Template Message
+    if 'templateMessage' in line_data:
+        template = line_data['templateMessage']
+        messages.append({
+            'type': 'template',
+            'altText': template.get('altText', 'Template Message'),
+            'template': template  # The template object itself
+        })
+        
+    # 3. Location Message
+    if 'location' in line_data:
+        loc = line_data['location']
+        messages.append({
+            'type': 'location',
+            'title': loc.get('title', 'Location'),
+            'address': loc.get('address', ''),
+            'latitude': loc.get('latitude', 0),
+            'longitude': loc.get('longitude', 0)
+        })
+        
+    # 4. Images
+    if 'image' in line_data:
+        img = line_data['image']
+        messages.append({
+            'type': 'image',
+            'originalContentUrl': img.get('originalContentUrl'),
+            'previewImageUrl': img.get('previewImageUrl') or img.get('originalContentUrl')
+        })
+        
+    # 5. Stickers
+    if 'sticker' in line_data:
+        sticker = line_data['sticker']
+        messages.append({
+            'type': 'sticker',
+            'packageId': sticker.get('packageId'),
+            'stickerId': sticker.get('stickerId')
+        })
+
+    # 6. Quick Replies (attach to the last message)
+    quick_replies = line_data.get('quickReplies')
+    if quick_replies and messages:
+        # Convert simple string list to minimal action objects if needed
+        # Or assume full action objects are provided
+        items = []
+        for qr in quick_replies:
+            if isinstance(qr, str):
+                # Simple text quick reply
+                items.append({
+                    'type': 'action',
+                    'action': {'type': 'message', 'label': qr, 'text': qr}
+                })
+            elif isinstance(qr, dict):
+                # Full quick reply options
+                items.append(qr)
+                
+        if items:
+            messages[-1]['quickReply'] = {'items': items}
+            
+    return messages
+
+
+def process_with_openclaw(text, user_id='', source_type='user', group_id=None, attachments=None):
+    """
+    Forward message to OpenClaw via HTTP bridge.
+    The bridge handles Gateway WS protocol (connect.challenge, device signature, agent RPC).
+    Returns: List of LINE message objects
     """
     import requests
 
-    url = get_uci_config('openclaw_url', '')
-    token = get_uci_config('openclaw_token', '')
-    model = get_uci_config('openclaw_model', '')
+    bridge_url = get_uci_config('openclaw_bridge_url', 'http://127.0.0.1:5001/message')
     timeout_cfg = get_uci_config('openclaw_timeout', '60')
     try:
         timeout = int(timeout_cfg)
     except Exception:
         timeout = 60
 
-    if not url or not token:
-        raise ValueError("openclaw_url or openclaw_token is empty")
+    if not bridge_url:
+        raise ValueError("openclaw_bridge_url is empty")
 
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Bearer {token}'
+    logger.info("Sending to OpenClaw bridge: %s", bridge_url)
+
+    # Build payload for bridge
+    payload = {
+        'text': text,
+        'userId': user_id,
+        'sourceType': source_type,
     }
-    payload = {'message': text}
-    if model:
-        payload['model'] = model
+    if group_id:
+        payload['groupId'] = group_id
+    if attachments:
+        payload['attachments'] = attachments
 
-    logger.info("Routing message to OpenClaw: %s", url)
+    try:
+        resp = requests.post(bridge_url, json=payload, timeout=timeout)
+        resp.raise_for_status()
+        result = resp.json()
+    except requests.exceptions.RequestException as e:
+        logger.error("OpenClaw bridge request failed: %s", e)
+        raise
 
-    # Use stream=True to handle potential streaming NDJSON response
-    resp = requests.post(url, json=payload, headers=headers, timeout=timeout, stream=True)
-    resp.raise_for_status()
+    # Parse result: { text, channelData }
+    response_text = result.get('text', '').strip()
+    channel_data = result.get('channelData', {})
 
-    # Try to detect if response is streaming NDJSON or regular JSON
-    content_type = resp.headers.get('Content-Type', '')
+    # Convert to LINE message objects
+    messages = parse_openclaw_payload(response_text, channel_data)
 
-    # For streaming responses, parse NDJSON
-    if 'text/event-stream' in content_type or 'application/x-ndjson' in content_type:
-        content_parts = []
-        for line in resp.iter_lines():
-            if line:
-                try:
-                    chunk = json.loads(line.decode('utf-8'))
-                    # Try multiple response formats
-                    content = (
-                        chunk.get('message', {}).get('content', '') or
-                        chunk.get('response', '') or
-                        chunk.get('text', '') or
-                        chunk.get('content', '')
-                    )
-                    if content:
-                        content_parts.append(content)
-                    if chunk.get('done', False):
-                        break
-                except json.JSONDecodeError:
-                    continue
-        reply = ''.join(content_parts).strip()
-    else:
-        # Regular JSON response
-        reply = extract_text_from_payload(resp.json())
-        if not reply:
-            reply = resp.text.strip()
+    if not messages:
+        messages = [{'type': 'text', 'text': "（OpenClaw 回覆為空）"}]
 
-    if not reply:
-        reply = "（OpenClaw 回覆為空）"
-    return reply
+    return messages
 
 
 def process_with_anythingllm(text):
@@ -494,7 +561,9 @@ def route_message_text(text):
         if processor == PROCESSOR_REMOTE_LLM:
             return process_with_remote_llm(text)
         if processor == PROCESSOR_OPENCLAW:
-            return process_with_openclaw(text)
+            # Note: This path is for legacy/testing only as OpenClaw is handled in process_message now
+            # We return a simple string representation if called here
+            return "[OpenClaw requires full event context]"
         if processor == PROCESSOR_ANYTHINGLLM:
             return process_with_anythingllm(text)
         # Default: echo
@@ -695,25 +764,78 @@ def process_message(event, access_token):
 
     if message_type == 'text':
         text = event['message'].get('text', '')
-        processor = get_uci_config('processor', PROCESSOR_ECHO).lower() or PROCESSOR_ECHO
+    elif message_type in ('image', 'video', 'audio'):
+        text = ''  # Empty text for media
+        msg_id = event['message'].get('id')
+        # LINE Content API URL
+        # Note: OpenClaw will need the channel access token (passed in metadata) to download this
+        content_url = f"https://api-data.line.me/v2/bot/message/{msg_id}/content"
+        attachments = [{
+            'type': message_type,  # image, video, audio
+            'url': content_url,
+            'id': msg_id
+        }]
+    elif message_type == 'location':
+        loc = event['message']
+        text = f"Location: {loc.get('title', '')} {loc.get('address', '')}"
+        attachments = [{
+            'type': 'location',
+            'latitude': loc.get('latitude'),
+            'longitude': loc.get('longitude'),
+            'title': loc.get('title'),
+            'address': loc.get('address')
+        }]
+    elif message_type == 'sticker':
+        stk = event['message']
+        text = f"[Sticker {stk.get('packageId')}-{stk.get('stickerId')}]"
+        attachments = [{
+            'type': 'sticker',
+            'packageId': stk.get('packageId'),
+            'stickerId': stk.get('stickerId')
+        }]
+    else:
+        text = f"Unsupported message type: {message_type}"
 
-        # N8N processor handles response asynchronously via Push API
-        if processor == PROCESSOR_N8N:
-            try:
-                process_with_n8n(text, user_id, reply_token, access_token)
-                return  # N8N will send response via Push API
-            except Exception as e:
-                logger.error("N8N forwarding failed: %s", e)
-                # Fallback: send error message directly
-                messages = [{'type': 'text', 'text': f"[N8N error] {text}"}]
-                send_reply(reply_token, messages, access_token)
-                return
+    processor = get_uci_config('processor', PROCESSOR_ECHO).lower() or PROCESSOR_ECHO
 
-        # Other processors: synchronous handling
+    # N8N processor handles response asynchronously via Push API
+    if processor == PROCESSOR_N8N:
+        try:
+            # Note: process_with_n8n might need updates to support non-text if N8N workflow expects it
+            # For now, we mainly support text for N8N in this bridge
+            process_with_n8n(text, user_id, reply_token, access_token)
+            return  # N8N will send response via Push API
+        except Exception as e:
+            logger.error("N8N forwarding failed: %s", e)
+            # Fallback: send error message directly
+            messages = [{'type': 'text', 'text': f"[N8N error] {text}"}]
+            send_reply(reply_token, messages, access_token)
+            return
+
+    # OpenClaw processor: pass full event context for session handling
+    if processor == PROCESSOR_OPENCLAW:
+        try:
+            source_type = source.get('type', 'user')
+            group_id = source.get('groupId') or source.get('roomId')
+            
+            # Returns list of message objects (text, flex, etc)
+            # Pass attachments if resolved
+            messages = process_with_openclaw(text, user_id, source_type, group_id, attachments)
+        except Exception as e:
+            logger.error("OpenClaw processor failed: %s", e)
+            messages = [{'type': 'text', 'text': f"[OpenClaw error] {e}"}]
+        
+        send_reply(reply_token, messages, access_token)
+        return
+
+    # Other processors: synchronous handling (Echo, Remote LLM, AnythingLLM)
+    # These mostly support text only
+    if message_type == 'text':
         reply_text = route_message_text(text)
         messages = [{'type': 'text', 'text': reply_text}]
     else:
-        messages = [{'type': 'text', 'text': 'Unsupported message type.'}]
+        # Simple fallback for non-text messages on other processors
+        messages = [{'type': 'text', 'text': f"Received {message_type} message: {text}"}]
 
     send_reply(reply_token, messages, access_token)
 

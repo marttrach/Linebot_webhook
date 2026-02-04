@@ -101,7 +101,7 @@ You can choose how `process_message` replies via LuCI or UCI (`line_webhook.main
 
 - `echo` (default): Replies with the same text.
 - `remote_llm`: Calls Ollama's `/api/chat` endpoint with streaming NDJSON support. Configure `remote_api_url`, `remote_api_model`, and optional `remote_api_timeout`.
-- `openclaw`: POSTs `{ message, model? }` to `openclaw_url` with `Authorization: Bearer <openclaw_token>`; supports both regular JSON and streaming NDJSON responses.
+- `openclaw`: Forwards messages to OpenClaw via HTTP bridge (`openclaw_bridge_url`, default `http://127.0.0.1:5001/message`). The bridge (Node.js script on OpenClaw host) handles Gateway WS protocol with device signature and agent RPC. Supports Rich Messages.
 - `anythingllm`: Calls AnythingLLM's workspace chat API. Configure `anythingllm_url`, `anythingllm_api_key`, `anythingllm_mode` (default: `chat`), and optional `anythingllm_timeout`.
 - `n8n`: Forwards messages to N8N workflow for advanced processing with Cloudflare R2 image hosting, conversation memory, and async responses via Push API.
 
@@ -150,27 +150,65 @@ The webhook server includes a dedicated `/grafana` endpoint to receive Grafana a
 
 #### Setup Steps
 
-1. **Get your LINE User ID**:
-   - Send any message to your LINE Bot
-   - Check the logs: `logread | grep "Message from user"`
-   - Copy the `Uxxxxxxxx...` ID (33 characters)
+#### Setup Steps
 
-2. **Configure the User ID and Secret**:
+##### Step 1: Get your LINE User ID
+
+1. Send any message to your LINE Bot.
+2. Check the logs on your router:
    ```sh
-   uci set line_webhook.main.grafana_user_id='Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
-   uci set line_webhook.main.grafana_secret='your_random_secret_here'
-   uci commit line_webhook
-   /etc/init.d/line_webhook restart
+   logread | grep "Message from user"
    ```
-   Or via LuCI: **Services → LINE Webhook → Grafana Integration**
+3. Copy the `Uxxxxxxxx...` ID (33 characters).
 
-3. **Configure Grafana Contact Point**:
-   - In Grafana, go to **Alerting → Contact points**
-   - Add a new contact point with type **Webhook**
-   - Set URL to: `http://YOUR_SERVER:PORT/grafana`
-   - Expand **Optional Webhook settings**
-   - Set **Authorization Header** (Credentials) to: `Bearer your_random_secret_here`
-   - Save and test
+##### Step 2: Generate a Webhook Secret
+
+You need a secret string to secure the webhook. You can generate a random one using `openssl` (on OpenWrt or any Linux/Mac):
+
+```sh
+# Generate a random 32-character alphanumeric string
+openssl rand -hex 16
+# Example output: 8f3d2a1b9c4e5d6f7a8b9c0d1e2f3a4b
+```
+
+*Note: You can use any string you like, but a random string is recommended for security.*
+
+##### Step 3: Configure the Webhook Server
+
+**Via LuCI Web Interface:**
+1. Navigate to **Services → LINE Webhook**.
+2. Scroll to the **Grafana Integration** section.
+3. Paste your **LINE User ID**.
+4. Paste your **Webhook Secret** (from Step 2).
+5. Click **Save & Apply**.
+
+**Via Command Line:**
+```sh
+uci set line_webhook.main.grafana_user_id='Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+uci set line_webhook.main.grafana_secret='YOUR_GENERATED_SECRET'
+uci commit line_webhook
+/etc/init.d/line_webhook restart
+```
+
+##### Step 4: Configure Grafana Contact Point
+
+1. Log in to your Grafana instance.
+2. Go to **Alerting** → **Contact points**.
+3. Click **+ Add contact point**.
+4. **Name**: Enter a name (e.g., `LINE Bot`).
+5. **Integration**: Select `Webhook`.
+6. **Url**: Enter your webhook endpoint:
+   - If using DDNS: `https://your-domain.com:5000/grafana`
+   - If using Cloudflare Tunnel: `https://your-hostname/grafana`
+7. Expand **Optional Webhook settings**.
+8. **Http Method**: `POST` (Default).
+9. **Authorization Header**:
+   - Format: `Bearer <YOUR_SECRET>`
+   - Example: `Bearer 8f3d2a1b9c4e5d6f7a8b9c0d1e2f3a4b`
+   - *Important: You MUST include the word "Bearer " before the secret.*
+10. Click **Test** → **Send test notification**.
+    - You should receive a test message on LINE.
+11. Click **Save contact point**.
 
 #### Example LINE Message
 

@@ -152,22 +152,14 @@ return view.extend({
         o.datatype = 'uinteger';
         o.placeholder = '60';
 
-        o = s.option(form.Value, 'openclaw_url', _('OpenClaw URL'),
-            _('OpenClaw chat endpoint (POST).'));
+        o = s.option(form.Value, 'openclaw_bridge_url', _('OpenClaw Bridge URL'),
+            _('HTTP bridge endpoint that handles Gateway WS protocol (default: http://127.0.0.1:5001/message).'));
         o.depends('processor', 'openclaw');
-        o.rmempty = false;
-
-        o = s.option(form.Value, 'openclaw_token', _('OpenClaw Token'),
-            _('Bearer token for OpenClaw Authorization header.'));
-        o.password = true;
-        o.depends('processor', 'openclaw');
-
-        o = s.option(form.Value, 'openclaw_model', _('OpenClaw model'),
-            _('Optional model override sent as \"model\".'));
-        o.depends('processor', 'openclaw');
+        o.placeholder = 'http://127.0.0.1:5001/message';
+        o.default = 'http://127.0.0.1:5001/message';
 
         o = s.option(form.Value, 'openclaw_timeout', _('OpenClaw timeout (s)'),
-            _('Max seconds to wait for OpenClaw.'));
+            _('Max seconds to wait for OpenClaw response.'));
         o.depends('processor', 'openclaw');
         o.datatype = 'uinteger';
         o.placeholder = '60';
