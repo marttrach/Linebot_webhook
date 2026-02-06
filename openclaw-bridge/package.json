@@ -1,0 +1,16 @@
+{
+  "name": "openclaw-bridge",
+  "version": "1.0.0",
+  "description": "Node.js bridge that connects OpenWrt LINE Webhook to OpenClaw Gateway using the correct WS protocol.",
+  "main": "openclaw-line-bridge.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "ws": "^8.19.0"
+  }
+}

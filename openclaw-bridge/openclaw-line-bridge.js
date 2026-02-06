@@ -191,27 +191,46 @@ class GatewayClient {
   async respondToChallenge(challenge, connectResolve, connectReject) {
     const { nonce, ts } = challenge;
     
-    // Build signature payload
+    // Build signature payload (match what we claim in connect params)
+    const signedAt = new Date().toISOString();
+    const clientInfo = {
+      id: CLIENT_ID,
+      mode: CLIENT_MODE,
+      version: process.version,
+      platform: `${process.platform}-${process.arch}`
+    };
+
     const signaturePayload = {
       nonce,
       ts,
-      scopes: SCOPES
+      scopes: SCOPES,
+      client: clientInfo,
+      device: {
+        id: deviceKey.deviceId,
+        publicKey: base64url(deviceKey.publicKey),
+        signedAt
+      }
     };
-    
+
     const signature = signPayload(signaturePayload);
-    
+
     // Send connect request
+    // Newer Gateway expects minProtocol/maxProtocol at root (not params.protocol)
+    // and additional client/device fields.
+
     const connectReq = {
       type: 'req',
       id: uuid(),
       method: 'connect',
       params: {
-        client: { id: CLIENT_ID, mode: CLIENT_MODE },
-        protocol: PROTOCOL_VERSION,
+        minProtocol: PROTOCOL_VERSION.min,
+        maxProtocol: PROTOCOL_VERSION.max,
         scopes: SCOPES,
+        client: clientInfo,
         device: {
-          deviceId: deviceKey.deviceId,
+          id: deviceKey.deviceId,
           publicKey: base64url(deviceKey.publicKey),
+          signedAt,
           signature
         }
       }
