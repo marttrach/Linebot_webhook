@@ -377,10 +377,14 @@ def process_with_openclaw(text, user_id='', source_type='user', group_id=None, a
     logger.info("Sending to OpenClaw bridge: %s", bridge_url)
 
     # Build payload for bridge
+    # Include device signature info required by OpenClaw Gateway protocol
     payload = {
         'text': text,
         'userId': user_id,
         'sourceType': source_type,
+        'device': {
+            'signedAt': int(time.time() * 1000)  # Unix timestamp in milliseconds
+        }
     }
     if group_id:
         payload['groupId'] = group_id
@@ -761,6 +765,8 @@ def process_message(event, access_token):
     # Mark as read when token is provided (2025 Messaging API spec)
     if mark_token:
         mark_as_read(mark_token, access_token)
+
+    attachments = None  # Initialize before branching
 
     if message_type == 'text':
         text = event['message'].get('text', '')

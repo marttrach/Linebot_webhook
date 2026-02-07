@@ -23,12 +23,13 @@ const { URL } = require('url');
 const GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL || 'ws://127.0.0.1:18789';
 const BRIDGE_PORT = parseInt(process.env.BRIDGE_PORT || '5001', 10);
 const DEVICE_KEY_PATH = process.env.DEVICE_KEY_PATH || './device-key.json';
+const GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || '';
 
 // Protocol constants
 const CLIENT_ID = 'gateway-client';
 const CLIENT_MODE = 'backend';
-const PROTOCOL_VERSION = { min: 1, max: 1 };
-const SCOPES = ['agent'];
+const PROTOCOL_VERSION = { min: 1, max: 3 };
+const SCOPES = ['agent', 'operator.write'];
 
 // Device identity (ed25519 keypair)
 let deviceKey = null;
@@ -169,11 +170,19 @@ class GatewayClient {
     if (msg.type === 'res' && msg.id) {
       const pending = this.pendingRequests.get(msg.id);
       if (pending) {
+        // OpenClaw sends two responses: first 'accepted', then 'ok' with result
+        // Only resolve when we get the final 'ok' status
+        if (msg.payload && msg.payload.status === 'accepted') {
+          // Don't resolve yet, wait for the 'ok' response
+          return;
+        }
+        
         this.pendingRequests.delete(msg.id);
-        if (msg.error) {
-          pending.reject(new Error(msg.error.message || 'Unknown error'));
+        if (msg.error || !msg.ok) {
+          pending.reject(new Error(msg.error?.message || 'Request failed'));
         } else {
-          pending.resolve(msg.result);
+          // Extract result from payload
+          pending.resolve(msg.payload);
         }
       }
       return;
@@ -191,8 +200,6 @@ class GatewayClient {
   async respondToChallenge(challenge, connectResolve, connectReject) {
     const { nonce, ts } = challenge;
     
-    // Build signature payload (match what we claim in connect params)
-    const signedAt = new Date().toISOString();
     const clientInfo = {
       id: CLIENT_ID,
       mode: CLIENT_MODE,
@@ -200,41 +207,60 @@ class GatewayClient {
       platform: `${process.platform}-${process.arch}`
     };
 
-    const signaturePayload = {
-      nonce,
-      ts,
-      scopes: SCOPES,
-      client: clientInfo,
-      device: {
-        id: deviceKey.deviceId,
-        publicKey: base64url(deviceKey.publicKey),
-        signedAt
-      }
-    };
+    let connectReq;
 
-    const signature = signPayload(signaturePayload);
-
-    // Send connect request
-    // Newer Gateway expects minProtocol/maxProtocol at root (not params.protocol)
-    // and additional client/device fields.
-
-    const connectReq = {
-      type: 'req',
-      id: uuid(),
-      method: 'connect',
-      params: {
-        minProtocol: PROTOCOL_VERSION.min,
-        maxProtocol: PROTOCOL_VERSION.max,
+    // Use token-based auth if GATEWAY_TOKEN is set
+    if (GATEWAY_TOKEN) {
+      console.log('[Gateway] Using token-based authentication');
+      connectReq = {
+        type: 'req',
+        id: uuid(),
+        method: 'connect',
+        params: {
+          minProtocol: PROTOCOL_VERSION.min,
+          maxProtocol: PROTOCOL_VERSION.max,
+          scopes: SCOPES,
+          client: clientInfo,
+          auth: {
+            token: GATEWAY_TOKEN
+          }
+        }
+      };
+    } else {
+      // Fallback to device signature auth
+      console.log('[Gateway] Using device signature authentication');
+      const signedAt = Date.now();
+      const signaturePayload = {
+        nonce,
+        ts,
         scopes: SCOPES,
         client: clientInfo,
         device: {
           id: deviceKey.deviceId,
           publicKey: base64url(deviceKey.publicKey),
-          signedAt,
-          signature
+          signedAt
         }
-      }
-    };
+      };
+      const signature = signPayload(signaturePayload);
+
+      connectReq = {
+        type: 'req',
+        id: uuid(),
+        method: 'connect',
+        params: {
+          minProtocol: PROTOCOL_VERSION.min,
+          maxProtocol: PROTOCOL_VERSION.max,
+          scopes: SCOPES,
+          client: clientInfo,
+          device: {
+            id: deviceKey.deviceId,
+            publicKey: base64url(deviceKey.publicKey),
+            signedAt,
+            signature
+          }
+        }
+      };
+    }
     
     this.pendingRequests.set(connectReq.id, {
       resolve: (result) => {
@@ -258,7 +284,7 @@ class GatewayClient {
       id: uuid(),
       method,
       params
-    };
+    }
     
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -320,11 +346,22 @@ async function callAgent(message, sessionKey, attachments = null) {
   
   console.log(`[Agent] Calling with sessionKey=${sessionKey}`);
   
-  const result = await client.sendRequest('agent', params);
+  const payload = await client.sendRequest('agent', params);
   
-  // Result contains runId, we may need to wait for completion
-  // For now, assume synchronous response or poll agent.wait
-  return result;
+  // Extract text from payload.result.payloads[0].text
+  
+  if (payload && payload.status === 'ok' && payload.result && payload.result.payloads) {
+    const payloads = payload.result.payloads;
+    if (payloads.length > 0 && payloads[0].text) {
+      return {
+        text: payloads[0].text,
+        mediaUrl: payloads[0].mediaUrl || null,
+        meta: payload.result.meta
+      };
+    }
+  }
+  
+  return { text: '(No response from agent)', meta: null };
 }
 
 /**
@@ -387,14 +424,12 @@ async function handleRequest(req, res) {
     : `agent:main:line-bridge:dm:${userId}`;
   
   try {
-    console.log(`[Bridge] Received message from ${userId}: "${text.slice(0, 50)}..."`);
-    
     const result = await callAgent(text, sessionKey, attachments);
     
-    // Parse result into text + channelData
+    // Parse result into text + channelData (handle null/undefined result)
     const response = {
-      text: result.text || result.response || '',
-      channelData: result.channelData || {}
+      text: (result && (result.text || result.response || result.message)) || '(No response)',
+      channelData: (result && result.channelData) || {}
     };
     
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -414,9 +449,12 @@ async function main() {
   console.log('[Bridge] OpenClaw LINE Bridge starting...');
   console.log(`[Bridge] Gateway: ${GATEWAY_URL}`);
   console.log(`[Bridge] Listen port: ${BRIDGE_PORT}`);
+  console.log(`[Bridge] Auth mode: ${GATEWAY_TOKEN ? 'token' : 'device-signature'}`);
   
-  // Load device key
-  loadOrCreateDeviceKey();
+  // Load device key only if not using token auth
+  if (!GATEWAY_TOKEN) {
+    loadOrCreateDeviceKey();
+  }
   
   // Pre-connect to gateway
   try {
