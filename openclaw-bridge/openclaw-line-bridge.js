@@ -348,20 +348,22 @@ async function callAgent(message, sessionKey, attachments = null) {
   
   const payload = await client.sendRequest('agent', params);
   
-  // Extract text from payload.result.payloads[0].text
+  // Extract text and channelData from payload.result.payloads[0]
   
   if (payload && payload.status === 'ok' && payload.result && payload.result.payloads) {
     const payloads = payload.result.payloads;
-    if (payloads.length > 0 && payloads[0].text) {
+    if (payloads.length > 0) {
+      const firstPayload = payloads[0];
       return {
-        text: payloads[0].text,
-        mediaUrl: payloads[0].mediaUrl || null,
+        text: firstPayload.text || '',
+        mediaUrl: firstPayload.mediaUrl || null,
+        channelData: firstPayload.channelData || {},
         meta: payload.result.meta
       };
     }
   }
   
-  return { text: '(No response from agent)', meta: null };
+  return { text: '(No response from agent)', channelData: {}, meta: null };
 }
 
 /**
@@ -424,7 +426,16 @@ async function handleRequest(req, res) {
     : `agent:main:line-bridge:dm:${userId}`;
   
   try {
-    const result = await callAgent(text, sessionKey, attachments);
+    // If text is empty but we have attachments, provide a default message
+    // OpenClaw Gateway requires message to have at least 1 character
+    let message = text;
+    if (!message && attachments && attachments.length > 0) {
+      // Describe the attachment type(s) as the message
+      const types = attachments.map(a => a.type || 'file').join(', ');
+      message = `[Attached: ${types}]`;
+    }
+    
+    const result = await callAgent(message || '[Empty message]', sessionKey, attachments);
     
     // Parse result into text + channelData (handle null/undefined result)
     const response = {
