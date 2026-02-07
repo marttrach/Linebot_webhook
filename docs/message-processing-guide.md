@@ -146,8 +146,12 @@ OpenWrt (HTTP) → Bridge (http://host:5001) → Gateway WS (ws://127.0.0.1:1878
     ```
 
 **How it works:**
-- **Inbound (User → Agent)**: Text and media forwarded to bridge via HTTP POST. Bridge calls `agent` RPC.
-- **Outbound (Agent → User)**: Bridge returns `{ text, channelData }`. OpenWrt converts to LINE messages (Flex, Template, Quick Reply).
+- **Inbound (User → Agent)**: 
+  - Text messages: Forwarded to bridge via HTTP POST. Bridge calls `agent` RPC.
+  - **Postback Events**: Triggered by Rich Menu buttons (e.g., `/status`, `/new`). `line-webhook-server` parses the `cmd` parameter and forwards it as a command to the bridge.
+- **Outbound (Agent → User)**:
+  - Text replies: Bridge returns `{ text }`.
+  - **Flex Messages (Rich Cards)**: Agent includes `channelData.line.flexMessage` in the response. Bridge passes this through, and `line-webhook-server` renders it as a native Interactive Card.
 
 ## Verification
 1. Send a message from LINE; expect a reply per the selected mode.

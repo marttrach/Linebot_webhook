@@ -29,10 +29,14 @@ const GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || '';
 const CLIENT_ID = 'gateway-client';
 const CLIENT_MODE = 'backend';
 const PROTOCOL_VERSION = { min: 1, max: 3 };
-const SCOPES = ['agent', 'operator.write'];
+const SCOPES = ['agent', 'operator.write', 'operator.admin'];
 
 // Device identity (ed25519 keypair)
 let deviceKey = null;
+
+// Session version tracking (for /new and /clear commands)
+// Maps userId -> version number (incremented on /new or /clear)
+const sessionVersions = new Map();
 
 /**
  * Generate or load ed25519 device keypair
@@ -367,6 +371,75 @@ async function callAgent(message, sessionKey, attachments = null) {
 }
 
 /**
+ * Call OpenClaw session_status RPC
+ * Returns session info: model, token usage, cost, etc.
+ */
+async function callSessionStatus(sessionKey) {
+  const client = await getGatewayClient();
+  
+  const params = sessionKey ? { sessionKey } : {};
+  
+  console.log(`[SessionStatus] Querying session: ${sessionKey || 'default'}`);
+  
+  const payload = await client.sendRequest('session_status', params);
+  
+  return payload;
+}
+
+/**
+ * Format session_status result as readable text for LINE
+ */
+function formatSessionStatus(data) {
+  // Safely extract fields with fallbacks
+  const model = 
+    data?.currentModel ?? 
+    data?.model ?? 
+    data?.defaultModel ?? 
+    '未知';
+  
+  const totalTokens = 
+    data?.stats?.totalTokens ?? 
+    data?.usage?.totalTokens ?? 
+    'N/A';
+  
+  const inputTokens = data?.stats?.inputTokens ?? 'N/A';
+  const outputTokens = data?.stats?.outputTokens ?? 'N/A';
+  
+  const costUsd = 
+    data?.stats?.costUsd ?? 
+    data?.cost?.usd ?? 
+    null;
+  const costText = costUsd !== null ? `$${costUsd.toFixed(4)} USD` : 'N/A';
+  
+  const reasoning = data?.flags?.reasoning ?? 'off';
+  const elevated = data?.flags?.elevated ? '是' : '否';
+  
+  const sessionKey = data?.session?.sessionKey ?? 'main';
+  
+  const uptime = data?.runtime?.uptimeSeconds 
+    ? `${Math.floor(data.runtime.uptimeSeconds / 60)} 分鐘`
+    : 'N/A';
+
+  // Format as multi-line text
+  const lines = [
+    '📊 OpenClaw Session 狀態',
+    '─────────────────',
+    `🤖 模型：${model}`,
+    `📈 Token 用量：${totalTokens}`,
+    `   ├ 輸入：${inputTokens}`,
+    `   └ 輸出：${outputTokens}`,
+    `💰 預估費用：${costText}`,
+    '─────────────────',
+    `🔧 Reasoning：${reasoning}`,
+    `⚡ Elevated：${elevated}`,
+    `🔑 Session：${sessionKey}`,
+    `⏱️ 運行時間：${uptime}`
+  ];
+
+  return lines.join('\n');
+}
+
+/**
  * HTTP Request Handler
  */
 async function handleRequest(req, res) {
@@ -420,10 +493,16 @@ async function handleRequest(req, res) {
     attachments = null
   } = payload;
   
-  // Build session key
-  const sessionKey = groupId
+  // Build session key (with version suffix for /new and /clear support)
+  const baseSessionKey = groupId
     ? `agent:main:line-bridge:group:${groupId}`
     : `agent:main:line-bridge:dm:${userId}`;
+  
+  // Get current session version (default to 0)
+  const sessionVersion = sessionVersions.get(userId) || 0;
+  const sessionKey = sessionVersion > 0 
+    ? `${baseSessionKey}:v${sessionVersion}` 
+    : baseSessionKey;
   
   try {
     // If text is empty but we have attachments, provide a default message
@@ -435,6 +514,91 @@ async function handleRequest(req, res) {
       message = `[Attached: ${types}]`;
     }
     
+    // ========================================
+    // Built-in command routing (handle locally)
+    // ========================================
+    const trimmedText = (message || '').trim().toLowerCase();
+    
+    // /status - Forward to agent (agent has session_status tool)
+    if (trimmedText === '/status') {
+      console.log('[Bridge] Forwarding /status to agent');
+      // Let the agent handle this - it has access to session_status tool
+      // Fall through to callAgent below
+    }
+    
+    // /model - Forward to agent
+    if (trimmedText === '/model') {
+      console.log('[Bridge] Forwarding /model to agent');
+      // Let the agent handle this
+      // Fall through to callAgent below
+    }
+    
+    // /help - Show available commands (handle locally)
+    if (trimmedText === '/help') {
+      const helpText = [
+        '📋 可用指令',
+        '─────────────────',
+        '🆕 /new - 開始新對話',
+        '📊 /model - 查看目前模型',
+        '📋 /models - 列出可用模型',
+        '📈 /status - 查看 Session 狀態',
+        '🗑️ /clear - 清除對話紀錄',
+        '❓ /help - 顯示此說明'
+      ].join('\n');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ text: helpText, channelData: {} }));
+      return;
+    }
+    
+    // /models - List available models (forward to agent as it may have this info)
+    if (trimmedText === '/models') {
+      console.log('[Bridge] Handling /models command - forwarding to agent');
+      // Let the agent handle this command as it knows what models are available
+      // Fall through to callAgent below
+    }
+    
+    // /new - Start new conversation (reset session context)
+    if (trimmedText === '/new') {
+      console.log('[Bridge] Handling /new command');
+      // Increment session version to create a new session
+      const currentVersion = sessionVersions.get(userId) || 0;
+      const newVersion = currentVersion + 1;
+      sessionVersions.set(userId, newVersion);
+      
+      const newText = [
+        '🆕 已開始新對話！',
+        '─────────────────',
+        '之前的對話紀錄已清除。',
+        `Session 版本：v${newVersion}`,
+        '請輸入您的問題。'
+      ].join('\n');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ text: newText, channelData: {} }));
+      return;
+    }
+    
+    // /clear - Clear conversation history (similar to /new)
+    if (trimmedText === '/clear') {
+      console.log('[Bridge] Handling /clear command');
+      // Increment session version to clear history
+      const currentVersion = sessionVersions.get(userId) || 0;
+      const newVersion = currentVersion + 1;
+      sessionVersions.set(userId, newVersion);
+      
+      const clearText = [
+        '🗑️ 對話紀錄已清除！',
+        '─────────────────',
+        `Session 版本：v${newVersion}`,
+        '您可以開始新的對話。'
+      ].join('\n');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ text: clearText, channelData: {} }));
+      return;
+    }
+    
+    // ========================================
+    // Forward other messages to OpenClaw Agent
+    // ========================================
     const result = await callAgent(message || '[Empty message]', sessionKey, attachments);
     
     // Parse result into text + channelData (handle null/undefined result)
@@ -476,7 +640,7 @@ async function main() {
   }
   
   // Start HTTP server
-  const host = process.env.BRIDGE_HOST || '0.0.0.0';
+  const host = process.env.BRIDGE_HOST || '127.0.0.1';
   const server = http.createServer(handleRequest);
   server.listen(BRIDGE_PORT, host, () => {
     console.log(`[Bridge] HTTP server listening on http://${host}:${BRIDGE_PORT}`);

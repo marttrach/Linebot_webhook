@@ -584,6 +584,8 @@ def handle_event(event, access_token):
 
     if event_type == 'message':
         process_message(event, access_token)
+    elif event_type == 'postback':
+        process_postback(event, access_token)
     else:
         logger.info(f"Unhandled event type: {event_type}")
 
@@ -843,6 +845,75 @@ def process_message(event, access_token):
         # Simple fallback for non-text messages on other processors
         messages = [{'type': 'text', 'text': f"Received {message_type} message: {text}"}]
 
+    send_reply(reply_token, messages, access_token)
+
+
+def process_postback(event, access_token):
+    """
+    Process postback events (e.g., from Rich Menu buttons).
+    Extracts command from postback data and forwards to processor.
+    """
+    reply_token = event.get('replyToken', '')
+    postback = event.get('postback', {})
+    data = postback.get('data', '')
+    
+    # Extract source info
+    source = event.get('source', {})
+    user_id = source.get('userId', '')
+    
+    logger.info(f"Postback from user {user_id}: {data}")
+    
+    if not reply_token:
+        logger.warning("No reply token for postback event")
+        return
+    
+    # Parse postback data (format: action=xxx&cmd=/xxx)
+    # Extract the cmd parameter as the text to send to processor
+    params = {}
+    for pair in data.split('&'):
+        if '=' in pair:
+            key, value = pair.split('=', 1)
+            params[key] = value
+    
+    # Get the command to execute (from 'cmd' param or 'action' param)
+    text = params.get('cmd', '') or params.get('action', '') or data
+    
+    # Prefix with / if it's an action without /
+    if text and not text.startswith('/') and 'action' in params:
+        text = '/' + text
+    
+    logger.info(f"Postback command: {text}")
+    
+    processor = get_uci_config('processor', PROCESSOR_ECHO).lower() or PROCESSOR_ECHO
+    
+    # OpenClaw processor: forward as text message
+    if processor == PROCESSOR_OPENCLAW:
+        try:
+            source_type = source.get('type', 'user')
+            group_id = source.get('groupId') or source.get('roomId')
+            
+            messages = process_with_openclaw(text, user_id, source_type, group_id, None)
+        except Exception as e:
+            logger.error("OpenClaw processor failed for postback: %s", e)
+            messages = [{'type': 'text', 'text': f"[OpenClaw error] {e}"}]
+        
+        send_reply(reply_token, messages, access_token)
+        return
+    
+    # N8N processor
+    if processor == PROCESSOR_N8N:
+        try:
+            process_with_n8n(text, user_id, reply_token, access_token)
+            return
+        except Exception as e:
+            logger.error("N8N forwarding failed for postback: %s", e)
+            messages = [{'type': 'text', 'text': f"[N8N error] {text}"}]
+            send_reply(reply_token, messages, access_token)
+            return
+    
+    # Other processors: route as text
+    reply_text = route_message_text(text)
+    messages = [{'type': 'text', 'text': reply_text}]
     send_reply(reply_token, messages, access_token)
 
 

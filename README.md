@@ -13,6 +13,9 @@ For detailed install/build steps, see the [Install & Build Guide](docs/install-b
 - **Extensible**: Easy to add custom reply logic
 - **TLS Ready**: Supports TLS 1.2/1.3 with hardened cipher suites
 - **Grafana Alerting**: Receive Grafana alerts via `/grafana` webhook endpoint
+- **Rich Menu Integration**: Built-in interactive menu for quick actions
+- **Rich Card (Flex Message)**: Support for complex, interactive message layouts
+- **Session Management**: Built-in commands for session reset and status check
 
 ## Requirements
 
