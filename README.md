@@ -19,7 +19,7 @@ For detailed install/build steps, see the [Install & Build Guide](docs/install-b
 
 ## Requirements
 
-- OpenWrt 24.10.x or later
+- OpenWrt 25.12.2 or later
 - Architecture: x86_64 (more architectures can be added)
 - Dependencies: `python3`, `python3-requests`, `luci-base`
 
@@ -27,12 +27,13 @@ For detailed install/build steps, see the [Install & Build Guide](docs/install-b
 
 ### From GitHub Releases
 
-1. Download the latest `.ipk` file from [Releases](../../releases)
+1. Download the latest `.apk` file from [Releases](../../releases)
 2. Upload to your OpenWrt device
 3. Install via SSH:
 
 ```sh
-opkg install luci-app-line-webhook_*.ipk
+apk update
+apk add --allow-untrusted ./luci-app-line-webhook-*.apk
 ```
 
 ### Build from Source
@@ -277,7 +278,7 @@ curl -k https://localhost:5000/
 ### Common issues
 
 - **Port in use**: Change the port in configuration
-- **Missing dependencies**: Run `opkg update && opkg install python3 python3-requests`
+- **Missing dependencies**: Run `apk update && apk add python3 python3-requests`
 - **Signature validation failed**: Verify your Channel Secret is correct
 - **TLS failed to start**: Ensure the cert/key files exist and are CA-signed; TLS 1.2+ is required
 

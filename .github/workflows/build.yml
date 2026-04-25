@@ -11,12 +11,16 @@ jobs:
   build:
     name: Build for ${{ matrix.arch }}
     runs-on: ubuntu-latest
-    if: contains(github.event.head_commit.message, '[ci]')
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message || '', '[ci]') ||
+      contains(github.event.pull_request.title || '', '[ci]') ||
+      contains(github.event.pull_request.body || '', '[ci]')
     strategy:
       fail-fast: false
       matrix:
         arch:
-          - x86_64-24.10.5
+          - x86_64-25.12.2
 
     steps:
       - name: Checkout repository
@@ -33,18 +37,22 @@ jobs:
           MAKEFLAGS: "-j$(nproc)"
           NO_SHFMT_CHECK: 1
 
-      - name: Upload IPK artifacts
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: luci-app-line-webhook-${{ matrix.arch }}
-          path: bin/packages/*/linebot/*.ipk
+          path: bin/packages/*/linebot/*.apk
           if-no-files-found: error
 
   test:
     name: Test in OpenWrt rootfs
     needs: build
     runs-on: ubuntu-latest
-    if: contains(github.event.head_commit.message, '[ci]')
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message || '', '[ci]') ||
+      contains(github.event.pull_request.title || '', '[ci]') ||
+      contains(github.event.pull_request.body || '', '[ci]')
     
     steps:
       - name: Checkout repository
@@ -53,30 +61,60 @@ jobs:
       - name: Download built packages
         uses: actions/download-artifact@v4
         with:
-          name: luci-app-line-webhook-x86_64-24.10.5
+          name: luci-app-line-webhook-x86_64-25.12.2
           path: packages/
 
       - name: Test package installation in container
         run: |
+          set -eux
+
           echo "=== Package files ==="
           ls -la packages/
 
           echo "=== Testing in OpenWrt rootfs ==="
-          docker run --rm -v $PWD/packages:/packages openwrt/rootfs:x86_64-24.10.5 sh -c '
+          docker run --rm -v $PWD/packages:/packages openwrt/rootfs:x86_64-25.12.2 sh -c '
+            set -eux
+
             echo "=== Updating package lists ==="
             mkdir -p /var/lock
-            opkg update || true
+            apk update
             
             echo "=== Installing dependencies ==="
-            opkg install python3 python3-flask python3-requests luci-base || echo "Some deps may not install in rootfs"
+            apk add python3 python3-requests luci-base
             
             echo "=== Installing our package ==="
-            opkg install /packages/*.ipk || echo "Package install test"
+            apk add --allow-untrusted /packages/*.apk
             
             echo "=== Checking installed files ==="
-            ls -la /usr/bin/line-webhook-server 2>/dev/null || echo "Binary not found (expected in rootfs test)"
-            ls -la /etc/config/line_webhook 2>/dev/null || echo "Config not found"
-            ls -la /etc/init.d/line_webhook 2>/dev/null || echo "Init script not found"
+            test -x /usr/bin/line-webhook-server
+            test -f /etc/config/line_webhook
+            test -x /etc/init.d/line_webhook
+
+            echo "=== Checking Python syntax ==="
+            python3 -m py_compile /usr/bin/line-webhook-server
+
+            echo "=== Checking server health endpoint ==="
+            uci set line_webhook.main.enabled="1"
+            uci set line_webhook.main.use_tls="0"
+            uci commit line_webhook
+            /usr/bin/python3 /usr/bin/line-webhook-server > /tmp/line-webhook.log 2>&1 &
+            server_pid=$!
+            trap "kill $server_pid 2>/dev/null || true; cat /tmp/line-webhook.log" EXIT
+
+            health_ok=0
+            for _ in 1 2 3 4 5; do
+              if uclient-fetch -q -O - http://127.0.0.1:5000/ | grep -q "LINE Webhook Server is running"; then
+                echo "Health check passed"
+                health_ok=1
+                break
+              fi
+              sleep 1
+            done
+
+            [ "$health_ok" -eq 1 ] || {
+              echo "Health check failed"
+              exit 1
+            }
             
             echo "=== Test complete ==="
           '
